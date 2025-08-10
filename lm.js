@@ -1,12 +1,17 @@
 const { Client } = require('discord.js-selfbot-v13');
 const axios = require('axios');
-const { Builder, By } = require('selenium-webdriver');
-const chrome = require('selenium-webdriver/chrome');
 
 // Use environment variable for token (more secure)
 const TOKEN = process.env.DISCORD_TOKEN || 'ODAzMzc0MDgyODE2MzQ0MDk0.G8QsjH.U965vGebzKvH7hILJPeShMFV24ku2Qgr9gtvxU';
-const MONITOR_CHANNEL_ID = '430203025659789343';
-const WHOIS_CHANNEL_ID = '1393342132583927821';
+const MONITOR_CHANNEL_IDS = ['430203025659789343', '442709792839172099', '442709710408515605'];
+
+// Map monitor channels to their corresponding whois channels
+const CHANNEL_MAPPING = {
+  '430203025659789343': '1393342132583927821', // lounge
+  '442709792839172099': '1403939114683863180', // trade lounge
+  '442709710408515605': '1403939122904825856'  // trade ads
+};
+
 const WEBHOOK_URL = 'https://discord.com/api/webhooks/1403167152751513642/Hm5U3_t_D8VYMN9Q3qUXnhzKGSeM2F-f3CyKVdedbH_k9BDPHYPGAsewO24FXepjIUzm';
 const BOT_ID = '298796807323123712';
 const ALLOWED_ROLES = [
@@ -30,46 +35,53 @@ async function fetchBlockedUsers() {
   }
 }
 
-let driver;
-async function initializeWebDriver() {
+// New function to get Rolimons data via API
+async function getRolimonsData(robloxUserId) {
   try {
-    const options = new chrome.Options();
-    options.addArguments('--headless', '--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--disable-web-security', '--disable-features=VizDisplayCompositor');
-    driver = await new Builder().forBrowser('chrome').setChromeOptions(options).build();
-    console.log('WebDriver initialized successfully');
+    // First, get the player's basic info
+    const playerResponse = await axios.get(`https://www.rolimons.com/api/players/${robloxUserId}`);
+    
+    if (playerResponse.data && playerResponse.data.success) {
+      const playerData = playerResponse.data.player;
+      
+      // Get player value from the data
+      const value = playerData.value || 0;
+      const tradeAds = playerData.trade_ads || 0;
+      const avatarUrl = playerData.avatar_url || '';
+      const username = playerData.username || '';
+      const rolimonsUrl = `https://www.rolimons.com/player/${robloxUserId}`;
+      
+      console.log(`[API] Retrieved data for ${username}: Value=${value}, TradeAds=${tradeAds}`);
+      
+      return { 
+        value, 
+        tradeAds, 
+        avatarUrl, 
+        rolimonsUrl, 
+        username,
+        success: true 
+      };
+    } else {
+      console.log(`[API] No data found for user ID: ${robloxUserId}`);
+      return { 
+        value: 0, 
+        tradeAds: 0, 
+        avatarUrl: '', 
+        rolimonsUrl: `https://www.rolimons.com/player/${robloxUserId}`,
+        username: '',
+        success: false 
+      };
+    }
   } catch (error) {
-    console.error('Error initializing WebDriver:', error.message);
-  }
-}
-
-async function scrapeRolimons(robloxUserId) {
-  if (!driver) {
-    console.error('WebDriver not initialized');
-    return { value: 0, tradeAds: 0, avatarUrl: '', rolimonsUrl: `https://www.rolimons.com/player/${robloxUserId}` };
-  }
-
-  const url = `https://www.rolimons.com/player/${robloxUserId}`;
-  try {
-    await driver.get(url);
-    await driver.sleep(3000);
-
-    let value = 0, tradeAds = 0, avatarUrl = '';
-    try {
-      const valueElem = await driver.findElement(By.id('player_value'));
-      value = parseInt((await valueElem.getText()).replace(/,/g, '')) || 0;
-    } catch {}
-    try {
-      const tradeAdsElem = await driver.findElement(By.css('span.card-title.mb-1.text-light.stat-data.text-nowrap'));
-      tradeAds = parseInt((await tradeAdsElem.getText()).replace(/,/g, '')) || 0;
-    } catch {}
-    try {
-      const avatarElem = await driver.findElement(By.css('img.mx-auto.d-block.w-100.h-100'));
-      avatarUrl = await avatarElem.getAttribute('src');
-    } catch {}
-    return { value, tradeAds, avatarUrl, rolimonsUrl: url };
-  } catch (error) {
-    console.error('Error scraping Rolimons:', error.message);
-    return { value: 0, tradeAds: 0, avatarUrl: '', rolimonsUrl: url };
+    console.error(`[API] Error fetching Rolimons data for ${robloxUserId}:`, error.message);
+    return { 
+      value: 0, 
+      tradeAds: 0, 
+      avatarUrl: '', 
+      rolimonsUrl: `https://www.rolimons.com/player/${robloxUserId}`,
+      username: '',
+      success: false 
+    };
   }
 }
 
@@ -77,16 +89,19 @@ const client = new Client({ checkUpdate: false });
 
 let processedUsers = new Set();
 let pendingRoblox = new Map();
+let webhookSent = new Set(); // Track which users we've already sent webhooks for
 
 client.on('ready', async () => {
   console.log(`[Monitor] Logged in as ${client.user.tag}`);
   await fetchBlockedUsers();
-  await initializeWebDriver();
+  console.log(`[Monitor] Bot ready and monitoring ${MONITOR_CHANNEL_IDS.length} channels!`);
+  console.log(`[Monitor] Channels: ${MONITOR_CHANNEL_IDS.join(', ')}`);
+  console.log(`[Monitor] Channel mapping:`, CHANNEL_MAPPING);
 });
 
 client.on('messageCreate', async (message) => {
   if (blockedUsers.has(message.author.id)) return;
-  if (message.channel.id !== MONITOR_CHANNEL_ID) return;
+  if (!MONITOR_CHANNEL_IDS.includes(message.channel.id)) return;
   if (message.author.bot) return;
   if (processedUsers.has(message.author.id)) return;
 
@@ -102,24 +117,37 @@ client.on('messageCreate', async (message) => {
   const onlyAllowedRoles = userRoleNames.length > 0 && userRoleNames.every(roleName => ALLOWED_ROLES.includes(roleName));
   if (!onlyAllowedRoles) return;
 
+  // Get the corresponding whois channel for this monitor channel
+  const whoisChannelId = CHANNEL_MAPPING[message.channel.id];
+  if (!whoisChannelId) {
+    console.log(`[Monitor] No whois channel mapping found for ${message.channel.id}`);
+    return;
+  }
+
   // Store the message info keyed by Discord ID (for now)
   pendingRoblox.set(message.author.id, {
     discordId: message.author.id,
     discordTag: message.author.tag,
     content: message.content,
-    timestamp: message.createdTimestamp
+    timestamp: message.createdTimestamp,
+    channelId: message.channel.id,
+    channelName: message.channel.name,
+    whoisChannelId: whoisChannelId
   });
-  const whoisChannel = await client.channels.fetch(WHOIS_CHANNEL_ID);
+  
+  const whoisChannel = await client.channels.fetch(whoisChannelId);
   if (!whoisChannel) return;
   await whoisChannel.sendSlash(BOT_ID, 'whois discord', message.author.id);
-  console.log(`[Monitor] Sent /whois discord for ${message.author.tag} (${message.author.id})`);
+  console.log(`[Monitor] Sent /whois discord for ${message.author.tag} (${message.author.id}) in #${message.channel.name} -> whois channel ${whoisChannelId}`);
 });
 
 // Listen for bot responses globally
 client.on('messageCreate', async (message) => {
+  // Check if this is a bot response in any of our whois channels
+  const whoisChannelIds = Object.values(CHANNEL_MAPPING);
   if (
     message.author.id === BOT_ID &&
-    message.channel.id === WHOIS_CHANNEL_ID &&
+    whoisChannelIds.includes(message.channel.id) &&
     message.embeds &&
     message.embeds.length > 0 &&
     message.embeds[0].fields
@@ -137,36 +165,51 @@ client.on('messageCreate', async (message) => {
     // We'll need to scrape Rolimons to get the Discord ID, so we check all pending
     for (const [discordId, msg] of pendingRoblox.entries()) {
       if (processedUsers.has(discordId)) continue;
-      // Scrape Rolimons and check value
-      const { value, tradeAds, avatarUrl, rolimonsUrl } = await scrapeRolimons(robloxUserId);
-      console.log(`[Monitor] Scraped value: ${value}, tradeAds: ${tradeAds}`);
+      
+      // Get Rolimons data via API instead of scraping
+      const { value, tradeAds, avatarUrl, rolimonsUrl, username, success } = await getRolimonsData(robloxUserId);
+      
+      console.log(`[Monitor] API result for ${username}: Value=${value}, TradeAds=${tradeAds}`);
+      
       if (value >= 50000) {
+        // Check if we've already sent a webhook for this user
+        if (webhookSent.has(discordId)) {
+          console.log(`[Monitor] Webhook already sent for ${msg.discordTag}, skipping...`);
+          processedUsers.add(discordId);
+          pendingRoblox.delete(discordId);
+          continue;
+        }
+        
         try {
           await axios.post(WEBHOOK_URL, {
             content: '@everyone',
             embeds: [
               {
                 title: 'User Message',
-                description: `**Message:** ${msg.content}\n**Discord:** ${msg.discordTag}`,
+                description: `**Message:** ${msg.content}\n**Discord:** ${msg.discordTag}\n**Channel:** #${msg.channelName}`,
                 color: 0x00ff00
               },
               {
                 title: 'Rolimons Info',
-                description: `**Value:** ${value.toLocaleString()}\n**Trade Ads:** ${tradeAds}\n[Rolimons Profile](${rolimonsUrl})`,
+                description: `**Username:** ${username}\n**Value:** ${value.toLocaleString()}\n**Trade Ads:** ${tradeAds}\n[Rolimons Profile](${rolimonsUrl})`,
                 color: 0x00ff00,
                 thumbnail: { url: avatarUrl }
               }
             ]
           });
+          
+          // Mark this user as processed and webhook sent
           processedUsers.add(discordId);
+          webhookSent.add(discordId);
           pendingRoblox.delete(discordId);
-          console.log('[Monitor] Sent to webhook!');
+          console.log(`[Monitor] Sent webhook for ${msg.discordTag} (${username}) with value ${value} from #${msg.channelName}!`);
           break; // Only process the first match
         } catch (error) {
           console.error('Error sending webhook:', error.message);
+          // Don't mark as processed if webhook failed
         }
       } else {
-        console.log('[Monitor] User did not meet value requirement.');
+        console.log(`[Monitor] User ${username} did not meet value requirement (${value} < 50000).`);
         processedUsers.add(discordId);
         pendingRoblox.delete(discordId);
       }
@@ -185,9 +228,6 @@ process.on('unhandledRejection', (error) => {
 
 process.on('SIGINT', async () => {
   console.log('Shutting down...');
-  if (driver) {
-    await driver.quit();
-  }
   process.exit(0);
 });
 
