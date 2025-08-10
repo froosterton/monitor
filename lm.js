@@ -80,6 +80,53 @@ async function scrapeRolimons(robloxUserId) {
   }
 }
 
+// Cache and in-flight dedupe for Rolimons scrapes
+const ROLIMONS_CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
+const rolimonsCache = new Map(); // robloxUserId -> { fetchedAt, data }
+const inFlightScrapes = new Map(); // robloxUserId -> Promise
+
+async function getRolimonsData(robloxUserId) {
+  const now = Date.now();
+  const cached = rolimonsCache.get(robloxUserId);
+  if (cached && (now - cached.fetchedAt) < ROLIMONS_CACHE_TTL_MS) {
+    return cached.data;
+  }
+  if (inFlightScrapes.has(robloxUserId)) {
+    return inFlightScrapes.get(robloxUserId);
+  }
+  const promise = (async () => {
+    const data = await scrapeRolimons(robloxUserId);
+    rolimonsCache.set(robloxUserId, { fetchedAt: Date.now(), data });
+    inFlightScrapes.delete(robloxUserId);
+    return data;
+  })();
+  inFlightScrapes.set(robloxUserId, promise);
+  return promise;
+}
+
+function extractDiscordIdFromEmbed(embed) {
+  try {
+    const textParts = [];
+    if (embed.title) textParts.push(embed.title);
+    if (embed.description) textParts.push(embed.description);
+    if (embed.author?.name) textParts.push(embed.author.name);
+    for (const field of embed.fields || []) {
+      if (field?.name) textParts.push(field.name);
+      if (field?.value) textParts.push(field.value);
+    }
+    const haystack = textParts.join(' \n');
+    // Try mention format
+    const mentionMatch = haystack.match(/<@!?([0-9]{10,25})>/);
+    if (mentionMatch) return mentionMatch[1];
+    // Try "Discord User ID" or "Discord ID"
+    const idLabelMatch = haystack.match(/discord(?:\s+user)?\s*id\s*[:\-]*\s*`?([0-9]{10,25})`?/i);
+    if (idLabelMatch) return idLabelMatch[1];
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 const client = new Client({ checkUpdate: false });
 
 let processedUsers = new Set();
@@ -157,57 +204,60 @@ client.on('messageCreate', async (message) => {
     }
     if (!robloxUserId) return;
 
-    // Find the pending request that matches this Roblox user ID
-    // We'll need to scrape Rolimons to get the Discord ID, so we check all pending
-    for (const [discordId, msg] of pendingRoblox.entries()) {
-      if (processedUsers.has(discordId)) continue;
-      
-      // Scrape Rolimons and check value
-      const { value, tradeAds, avatarUrl, rolimonsUrl } = await scrapeRolimons(robloxUserId);
-      console.log(`[Monitor] Scraped value: ${value}, tradeAds: ${tradeAds}`);
-      
-      if (value >= 50000) {
-        // Check if we've already sent a webhook for this user
-        if (webhookSent.has(discordId)) {
-          console.log(`[Monitor] Webhook already sent for ${msg.discordTag}, skipping...`);
-          processedUsers.add(discordId);
-          pendingRoblox.delete(discordId);
-          continue;
-        }
-        
-        try {
-          await axios.post(WEBHOOK_URL, {
-            content: '@everyone',
-            embeds: [
-              {
-                title: 'User Message',
-                description: `**Message:** ${msg.content}\n**Discord:** ${msg.discordTag}\n**Channel:** #${msg.channelName}`,
-                color: 0x00ff00
-              },
-              {
-                title: 'Rolimons Info',
-                description: `**Value:** ${value.toLocaleString()}\n**Trade Ads:** ${tradeAds}\n[Rolimons Profile](${rolimonsUrl})`,
-                color: 0x00ff00,
-                thumbnail: { url: avatarUrl }
-              }
-            ]
-          });
-          
-          // Mark this user as processed and webhook sent
-          processedUsers.add(discordId);
-          webhookSent.add(discordId);
-          pendingRoblox.delete(discordId);
-          console.log(`[Monitor] Sent webhook for ${msg.discordTag} with value ${value} from #${msg.channelName}!`);
-          break; // Only process the first match
-        } catch (error) {
-          console.error('Error sending webhook:', error.message);
-          // Don't mark as processed if webhook failed
-        }
-      } else {
-        console.log(`[Monitor] User did not meet value requirement (${value} < 50000).`);
-        processedUsers.add(discordId);
-        pendingRoblox.delete(discordId);
+    // Try to identify which Discord user this whois response is for
+    const targetDiscordId = extractDiscordIdFromEmbed(message.embeds[0]);
+    if (!targetDiscordId) {
+      console.log('[Monitor] Could not extract Discord ID from whois embed; skipping to avoid mismatches.');
+      return;
+    }
+
+    const msg = pendingRoblox.get(targetDiscordId);
+    if (!msg || processedUsers.has(targetDiscordId)) {
+      return;
+    }
+
+    // Fetch Rolimons data with cache/in-flight dedupe
+    const { value, tradeAds, avatarUrl, rolimonsUrl } = await getRolimonsData(robloxUserId);
+    console.log(`[Monitor] Scraped value: ${value}, tradeAds: ${tradeAds}`);
+
+    if (value >= 50000) {
+      if (webhookSent.has(targetDiscordId)) {
+        console.log(`[Monitor] Webhook already sent for ${msg.discordTag}, skipping...`);
+        processedUsers.add(targetDiscordId);
+        pendingRoblox.delete(targetDiscordId);
+        return;
       }
+
+      try {
+        await axios.post(WEBHOOK_URL, {
+          content: '@everyone',
+          embeds: [
+            {
+              title: 'User Message',
+              description: `**Message:** ${msg.content}\n**Discord:** ${msg.discordTag}\n**Channel:** #${msg.channelName}`,
+              color: 0x00ff00
+            },
+            {
+              title: 'Rolimons Info',
+              description: `**Value:** ${value.toLocaleString()}\n**Trade Ads:** ${tradeAds}\n[Rolimons Profile](${rolimonsUrl})`,
+              color: 0x00ff00,
+              thumbnail: { url: avatarUrl }
+            }
+          ]
+        });
+
+        processedUsers.add(targetDiscordId);
+        webhookSent.add(targetDiscordId);
+        pendingRoblox.delete(targetDiscordId);
+        console.log(`[Monitor] Sent webhook for ${msg.discordTag} with value ${value} from #${msg.channelName}!`);
+      } catch (error) {
+        console.error('Error sending webhook:', error.message);
+        // Don't mark as processed if webhook failed
+      }
+    } else {
+      console.log(`[Monitor] User did not meet value requirement (${value} < 50000).`);
+      processedUsers.add(targetDiscordId);
+      pendingRoblox.delete(targetDiscordId);
     }
   }
 });
