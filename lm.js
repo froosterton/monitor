@@ -1,5 +1,7 @@
 const { Client } = require('discord.js-selfbot-v13');
 const axios = require('axios');
+const { Builder, By } = require('selenium-webdriver');
+const chrome = require('selenium-webdriver/chrome');
 
 // Use environment variable for token (more secure)
 const TOKEN = process.env.DISCORD_TOKEN || 'ODAzMzc0MDgyODE2MzQ0MDk0.G8QsjH.U965vGebzKvH7hILJPeShMFV24ku2Qgr9gtvxU';
@@ -35,53 +37,46 @@ async function fetchBlockedUsers() {
   }
 }
 
-// New function to get Rolimons data via API
-async function getRolimonsData(robloxUserId) {
+let driver;
+async function initializeWebDriver() {
   try {
-    // First, get the player's basic info
-    const playerResponse = await axios.get(`https://www.rolimons.com/api/players/${robloxUserId}`);
-    
-    if (playerResponse.data && playerResponse.data.success) {
-      const playerData = playerResponse.data.player;
-      
-      // Get player value from the data
-      const value = playerData.value || 0;
-      const tradeAds = playerData.trade_ads || 0;
-      const avatarUrl = playerData.avatar_url || '';
-      const username = playerData.username || '';
-      const rolimonsUrl = `https://www.rolimons.com/player/${robloxUserId}`;
-      
-      console.log(`[API] Retrieved data for ${username}: Value=${value}, TradeAds=${tradeAds}`);
-      
-      return { 
-        value, 
-        tradeAds, 
-        avatarUrl, 
-        rolimonsUrl, 
-        username,
-        success: true 
-      };
-    } else {
-      console.log(`[API] No data found for user ID: ${robloxUserId}`);
-      return { 
-        value: 0, 
-        tradeAds: 0, 
-        avatarUrl: '', 
-        rolimonsUrl: `https://www.rolimons.com/player/${robloxUserId}`,
-        username: '',
-        success: false 
-      };
-    }
+    const options = new chrome.Options();
+    options.addArguments('--headless', '--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--disable-web-security', '--disable-features=VizDisplayCompositor');
+    driver = await new Builder().forBrowser('chrome').setChromeOptions(options).build();
+    console.log('WebDriver initialized successfully');
   } catch (error) {
-    console.error(`[API] Error fetching Rolimons data for ${robloxUserId}:`, error.message);
-    return { 
-      value: 0, 
-      tradeAds: 0, 
-      avatarUrl: '', 
-      rolimonsUrl: `https://www.rolimons.com/player/${robloxUserId}`,
-      username: '',
-      success: false 
-    };
+    console.error('Error initializing WebDriver:', error.message);
+  }
+}
+
+async function scrapeRolimons(robloxUserId) {
+  if (!driver) {
+    console.error('WebDriver not initialized');
+    return { value: 0, tradeAds: 0, avatarUrl: '', rolimonsUrl: `https://www.rolimons.com/player/${robloxUserId}` };
+  }
+
+  const url = `https://www.rolimons.com/player/${robloxUserId}`;
+  try {
+    await driver.get(url);
+    await driver.sleep(3000);
+
+    let value = 0, tradeAds = 0, avatarUrl = '';
+    try {
+      const valueElem = await driver.findElement(By.id('player_value'));
+      value = parseInt((await valueElem.getText()).replace(/,/g, '')) || 0;
+    } catch {}
+    try {
+      const tradeAdsElem = await driver.findElement(By.css('span.card-title.mb-1.text-light.stat-data.text-nowrap'));
+      tradeAds = parseInt((await tradeAdsElem.getText()).replace(/,/g, '')) || 0;
+    } catch {}
+    try {
+      const avatarElem = await driver.findElement(By.css('img.mx-auto.d-block.w-100.h-100'));
+      avatarUrl = await avatarElem.getAttribute('src');
+    } catch {}
+    return { value, tradeAds, avatarUrl, rolimonsUrl: url };
+  } catch (error) {
+    console.error('Error scraping Rolimons:', error.message);
+    return { value: 0, tradeAds: 0, avatarUrl: '', rolimonsUrl: url };
   }
 }
 
@@ -94,6 +89,7 @@ let webhookSent = new Set(); // Track which users we've already sent webhooks fo
 client.on('ready', async () => {
   console.log(`[Monitor] Logged in as ${client.user.tag}`);
   await fetchBlockedUsers();
+  await initializeWebDriver();
   console.log(`[Monitor] Bot ready and monitoring ${MONITOR_CHANNEL_IDS.length} channels!`);
   console.log(`[Monitor] Channels: ${MONITOR_CHANNEL_IDS.join(', ')}`);
   console.log(`[Monitor] Channel mapping:`, CHANNEL_MAPPING);
@@ -166,10 +162,9 @@ client.on('messageCreate', async (message) => {
     for (const [discordId, msg] of pendingRoblox.entries()) {
       if (processedUsers.has(discordId)) continue;
       
-      // Get Rolimons data via API instead of scraping
-      const { value, tradeAds, avatarUrl, rolimonsUrl, username, success } = await getRolimonsData(robloxUserId);
-      
-      console.log(`[Monitor] API result for ${username}: Value=${value}, TradeAds=${tradeAds}`);
+      // Scrape Rolimons and check value
+      const { value, tradeAds, avatarUrl, rolimonsUrl } = await scrapeRolimons(robloxUserId);
+      console.log(`[Monitor] Scraped value: ${value}, tradeAds: ${tradeAds}`);
       
       if (value >= 50000) {
         // Check if we've already sent a webhook for this user
@@ -191,7 +186,7 @@ client.on('messageCreate', async (message) => {
               },
               {
                 title: 'Rolimons Info',
-                description: `**Username:** ${username}\n**Value:** ${value.toLocaleString()}\n**Trade Ads:** ${tradeAds}\n[Rolimons Profile](${rolimonsUrl})`,
+                description: `**Value:** ${value.toLocaleString()}\n**Trade Ads:** ${tradeAds}\n[Rolimons Profile](${rolimonsUrl})`,
                 color: 0x00ff00,
                 thumbnail: { url: avatarUrl }
               }
@@ -202,14 +197,14 @@ client.on('messageCreate', async (message) => {
           processedUsers.add(discordId);
           webhookSent.add(discordId);
           pendingRoblox.delete(discordId);
-          console.log(`[Monitor] Sent webhook for ${msg.discordTag} (${username}) with value ${value} from #${msg.channelName}!`);
+          console.log(`[Monitor] Sent webhook for ${msg.discordTag} with value ${value} from #${msg.channelName}!`);
           break; // Only process the first match
         } catch (error) {
           console.error('Error sending webhook:', error.message);
           // Don't mark as processed if webhook failed
         }
       } else {
-        console.log(`[Monitor] User ${username} did not meet value requirement (${value} < 50000).`);
+        console.log(`[Monitor] User did not meet value requirement (${value} < 50000).`);
         processedUsers.add(discordId);
         pendingRoblox.delete(discordId);
       }
@@ -228,6 +223,9 @@ process.on('unhandledRejection', (error) => {
 
 process.on('SIGINT', async () => {
   console.log('Shutting down...');
+  if (driver) {
+    await driver.quit();
+  }
   process.exit(0);
 });
 
