@@ -93,9 +93,21 @@ async function scrapeRolimons(robloxUserId) {
     } catch {}
     
     try {
-      const tradeAdsElem = await driver.findElement(By.css('span.card-title.mb-1.text-light.stat-data.text-nowrap'));
+      // Look specifically for the Trade Ads Created container
+      const tradeAdsContainer = await driver.findElement(By.css('.trade-ads-created-container'));
+      const tradeAdsElem = await tradeAdsContainer.findElement(By.css('span.card-title.mb-1.text-light.stat-data.text-nowrap'));
       tradeAds = parseInt((await tradeAdsElem.getText()).replace(/,/g, '')) || 0;
-    } catch {}
+    } catch {
+      // Fallback: try to find by the header text "Trade Ads Created"
+      try {
+        const headers = await driver.findElements(By.xpath('//h6[contains(text(), "Trade Ads Created")]'));
+        if (headers.length > 0) {
+          const parent = await headers[0].findElement(By.xpath('..'));
+          const tradeAdsElem = await parent.findElement(By.css('span.card-title.mb-1.text-light.stat-data.text-nowrap'));
+          tradeAds = parseInt((await tradeAdsElem.getText()).replace(/,/g, '')) || 0;
+        }
+      } catch {}
+    }
     
     try {
       const avatarElem = await driver.findElement(By.css('img.mx-auto.d-block.w-100.h-100'));
@@ -111,9 +123,10 @@ async function scrapeRolimons(robloxUserId) {
 
 const client = new Client({ checkUpdate: false });
 
-let processedUsers = new Set();
-let pendingRoblox = new Map();
-let webhookSent = new Set(); // Track which users we've already sent webhooks for
+let processedUsers = new Set(); // Users we've already processed completely
+let pendingRoblox = new Map(); // Users waiting for Roblox ID lookup
+let webhookSent = new Set(); // Users we've already sent webhooks for
+let lookupAttempted = new Set(); // Users we've already tried to look up (prevents duplicate lookups)
 
 client.on('ready', async () => {
   console.log(`[Monitor] Logged in as ${client.user.tag}`);
@@ -129,6 +142,7 @@ client.on('messageCreate', async (message) => {
   if (!MONITOR_CHANNEL_IDS.includes(message.channel.id)) return;
   if (message.author.bot) return;
   if (processedUsers.has(message.author.id)) return;
+  if (lookupAttempted.has(message.author.id)) return; // Don't lookup the same user twice
 
   let member = message.member;
   if (!member) {
@@ -148,6 +162,9 @@ client.on('messageCreate', async (message) => {
     console.log(`[Monitor] No whois channel mapping found for ${message.channel.id}`);
     return;
   }
+
+  // Mark this user as lookup attempted to prevent duplicate lookups
+  lookupAttempted.add(message.author.id);
 
   // Store the message info keyed by Discord ID (for now)
   pendingRoblox.set(message.author.id, {
@@ -194,6 +211,14 @@ client.on('messageCreate', async (message) => {
       // Scrape Rolimons and check value
       const { value, tradeAds, avatarUrl, rolimonsUrl } = await scrapeRolimons(robloxUserId);
       console.log(`[Monitor] Scraped value: ${value}, tradeAds: ${tradeAds}`);
+      
+      // Check if trade ads is over 1,000 - if so, skip this user
+      if (tradeAds >= 1000) {
+        console.log(`[Monitor] User has too many trade ads (${tradeAds} >= 1000), skipping...`);
+        processedUsers.add(discordId);
+        pendingRoblox.delete(discordId);
+        continue;
+      }
       
       if (value >= 50000) {
         // Check if we've already sent a webhook for this user
