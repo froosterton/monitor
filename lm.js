@@ -1,6 +1,7 @@
 const { Client } = require('discord.js-selfbot-v13');
 const axios = require('axios');
-const puppeteer = require('puppeteer');
+const { Builder, By } = require('selenium-webdriver');
+const chrome = require('selenium-webdriver/chrome');
 
 // Use environment variable for token (more secure)
 const TOKEN = process.env.DISCORD_TOKEN
@@ -36,66 +37,69 @@ async function fetchBlockedUsers() {
   }
 }
 
-let browser;
-let page;
+let driver;
 
 async function initializeWebDriver() {
   try {
-    browser = await puppeteer.launch({
-      headless: true,
-      args: [
+    console.log('🔧 Initializing Selenium WebDriver...');
+    const options = new chrome.Options();
+    
+    // Cloud-optimized Chrome options
+    options.addArguments(
+        '--headless',
         '--no-sandbox',
-        '--disable-setuid-sandbox',
         '--disable-dev-shm-usage',
-        '--disable-accelerated-2d-canvas',
-        '--no-first-run',
-        '--no-zygote',
-        '--single-process',
-        '--disable-gpu'
-      ]
-    });
-    page = await browser.newPage();
-    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36');
-    console.log('WebDriver initialized successfully');
+        '--disable-gpu',
+        '--disable-web-security',
+        '--disable-features=VizDisplayCompositor',
+        '--disable-extensions',
+        '--disable-plugins',
+        '--memory-pressure-off',
+        '--max_old_space_size=4096'
+    );
+    
+    // Set Chrome binary path for cloud environments
+    if (process.env.NODE_ENV === 'production') {
+        options.setChromeBinaryPath('/usr/bin/chromium');
+    }
+    
+    driver = await new Builder()
+        .forBrowser('chrome')
+        .setChromeOptions(options)
+        .build();
+        
+    console.log('✅ Selenium WebDriver initialized successfully');
   } catch (error) {
-    console.error('Error initializing WebDriver:', error.message);
+    console.error('❌ WebDriver initialization error:', error.message);
   }
 }
 
 async function scrapeRolimons(robloxUserId) {
-  if (!page) {
+  if (!driver) {
     console.error('WebDriver not initialized');
     return { value: 0, tradeAds: 0, avatarUrl: '', rolimonsUrl: `https://www.rolimons.com/player/${robloxUserId}` };
   }
 
   const url = `https://www.rolimons.com/player/${robloxUserId}`;
   try {
-    await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
-    await page.waitForTimeout(3000);
+    await driver.get(url);
+    await driver.sleep(3000);
 
     let value = 0, tradeAds = 0, avatarUrl = '';
     
     try {
-      const valueElem = await page.$('#player_value');
-      if (valueElem) {
-        const valueText = await page.evaluate(el => el.textContent, valueElem);
-        value = parseInt(valueText.replace(/,/g, '')) || 0;
-      }
+      const valueElem = await driver.findElement(By.id('player_value'));
+      value = parseInt((await valueElem.getText()).replace(/,/g, '')) || 0;
     } catch {}
     
     try {
-      const tradeAdsElem = await page.$('span.card-title.mb-1.text-light.stat-data.text-nowrap');
-      if (tradeAdsElem) {
-        const tradeAdsText = await page.evaluate(el => el.textContent, tradeAdsElem);
-        tradeAds = parseInt(tradeAdsText.replace(/,/g, '')) || 0;
-      }
+      const tradeAdsElem = await driver.findElement(By.css('span.card-title.mb-1.text-light.stat-data.text-nowrap'));
+      tradeAds = parseInt((await tradeAdsElem.getText()).replace(/,/g, '')) || 0;
     } catch {}
     
     try {
-      const avatarElem = await page.$('img.mx-auto.d-block.w-100.h-100');
-      if (avatarElem) {
-        avatarUrl = await page.evaluate(el => el.src, avatarElem);
-      }
+      const avatarElem = await driver.findElement(By.css('img.mx-auto.d-block.w-100.h-100'));
+      avatarUrl = await avatarElem.getAttribute('src');
     } catch {}
     
     return { value, tradeAds, avatarUrl, rolimonsUrl: url };
@@ -248,8 +252,8 @@ process.on('unhandledRejection', (error) => {
 
 process.on('SIGINT', async () => {
   console.log('Shutting down...');
-  if (browser) {
-    await browser.close();
+  if (driver) {
+    await driver.quit();
   }
   process.exit(0);
 });
@@ -259,4 +263,3 @@ client.login(TOKEN).catch(error => {
   console.error('Failed to login:', error);
   process.exit(1);
 });
-
