@@ -3,7 +3,7 @@ const axios = require('axios');
 const puppeteer = require('puppeteer');
 
 // Use environment variable for token (more secure)
-const TOKEN = process.env.DISCORD_TOKEN || 'ODAzMzc0MDgyODE2MzQ0MDk0.G8QsjH.U965vGebzKvH7hILJPeShMFV24ku2Qgr9gtvxU';
+const TOKEN = process.env.DISCORD_TOKEN
 const MONITOR_CHANNEL_IDS = ['430203025659789343', '442709792839172099', '442709710408515605'];
 
 // Map monitor channels to their corresponding whois channels
@@ -259,3 +259,4 @@ client.login(TOKEN).catch(error => {
   console.error('Failed to login:', error);
   process.exit(1);
 });
+
