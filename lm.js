@@ -18,8 +18,8 @@ const CHANNEL_MAPPING = {
   '430203025659789343': '1393342132583927821', // lounge
   '442709792839172099': '1403939114683863180', // trade lounge
   '442709710408515605': '1403939122904825856', // trade ads
-  '749645946719174757': '1411217649878306987', // New channel 1 whois
-  '808540135666745345': '1411217662444437524'  // New channel 2 whois
+  '749645946719174757': '1393342132583927821', // New channel 1 whois (using existing channel)
+  '808540135666745345': '1393342132583927821'  // New channel 2 whois (using existing channel)
 };
 
 // Guilds where role filtering should be skipped
@@ -202,8 +202,15 @@ client.on('messageCreate', async (message) => {
   
   const whoisChannel = await client.channels.fetch(whoisChannelId);
   if (!whoisChannel) return;
-  await whoisChannel.sendSlash(BOT_ID, 'whois discord', message.author.id);
-  console.log(`[Monitor] Sent /whois discord for ${message.author.tag} (${message.author.id}) in #${message.channel.name} -> whois channel ${whoisChannelId}`);
+  
+  try {
+    await whoisChannel.sendSlash(BOT_ID, 'whois discord', message.author.id);
+    console.log(`[Monitor] Sent /whois discord for ${message.author.tag} (${message.author.id}) in #${message.channel.name} -> whois channel ${whoisChannelId}`);
+  } catch (error) {
+    console.error(`[Monitor] Failed to send /whois command:`, error.message);
+    pendingRoblox.delete(message.author.id);
+    lookupAttempted.delete(message.author.id);
+  }
 });
 
 // Listen for bot responses globally
