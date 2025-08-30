@@ -22,6 +22,12 @@ const CHANNEL_MAPPING = {
   '808540135666745345': '1411217662444437524'  // New channel 2 whois
 };
 
+// Guilds where role filtering should be skipped
+const SKIP_ROLE_FILTER_GUILDS = [
+  '786851062219931690', // Guild for channel 808540135666745345
+  '749629643836882975'  // Guild for channel 749645946719174757
+];
+
 const WEBHOOK_URL = 'https://discord.com/api/webhooks/1403167152751513642/Hm5U3_t_D8VYMN9Q3qUXnhzKGSeM2F-f3CyKVdedbH_k9BDPHYPGAsewO24FXepjIUzm';
 const BOT_ID = '298796807323123712';
 const ALLOWED_ROLES = [
@@ -160,9 +166,18 @@ client.on('messageCreate', async (message) => {
       return;
     }
   }
-  const userRoleNames = member.roles.cache.filter(r => r.name !== '@everyone').map(r => r.name);
-  const onlyAllowedRoles = userRoleNames.length > 0 && userRoleNames.every(roleName => ALLOWED_ROLES.includes(roleName));
-  if (!onlyAllowedRoles) return;
+
+  // Check if role filtering should be applied based on guild
+  const shouldApplyRoleFilter = !SKIP_ROLE_FILTER_GUILDS.includes(message.guild.id);
+  
+  if (shouldApplyRoleFilter) {
+    // Apply role filtering only for guild 415246288779608064 and other guilds not in skip list
+    const userRoleNames = member.roles.cache.filter(r => r.name !== '@everyone').map(r => r.name);
+    const onlyAllowedRoles = userRoleNames.length > 0 && userRoleNames.every(roleName => ALLOWED_ROLES.includes(roleName));
+    if (!onlyAllowedRoles) return;
+  } else {
+    console.log(`[Monitor] Skipping role filter for guild ${message.guild.id} (${message.guild.name})`);
+  }
 
   // Get the corresponding whois channel for this monitor channel
   const whoisChannelId = CHANNEL_MAPPING[message.channel.id];
