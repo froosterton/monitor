@@ -32,6 +32,7 @@ const SKIP_ROLE_FILTER_GUILDS = [
 ];
 
 const WEBHOOK_URL = 'https://discord.com/api/webhooks/1403167152751513642/Hm5U3_t_D8VYMN9Q3qUXnhzKGSeM2F-f3CyKVdedbH_k9BDPHYPGAsewO24FXepjIUzm';
+const PRIVATE_INVENTORY_WEBHOOK_URL = 'https://discord.com/api/webhooks/1439812793384697926/oa5Ey82H1YKDRwiu0wmKSLax_Q5iIyqu3MXcARJFitvjSI1l8rtce9MFaJZb-cML-R1L';
 const BOT_ID = '298796807323123712';
 
 const ALLOWED_ROLES = [
@@ -135,33 +136,51 @@ async function fetchRobloxAvatar(robloxUserId) {
 async function scrapeRolimons(robloxUserId) {
   const rolimonsUrl = `https://www.rolimons.com/player/${robloxUserId}`;
   
-  // METHOD 1: Roblox API (FASTEST - ~200-500ms for RAP + avatar)
+  // METHOD 1: Check Rolimons HTML first to detect private inventory
+  let tradeAds = 0;
+  let isPrivate = false;
+  try {
+    const response = await axios.get(rolimonsUrl, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Accept': 'text/html'
+      },
+      timeout: 2000
+    });
+    
+    const html = response.data;
+    
+    // Check for private inventory indicator
+    if (html.includes('inventory is private') || html.toLowerCase().includes('value') && html.toLowerCase().includes('unknown')) {
+      isPrivate = true;
+    }
+    
+    const playerDataMatch = html.match(/var\s+player_details_data\s*=\s*({[^;]+});/);
+    if (playerDataMatch) {
+      const playerData = JSON.parse(playerDataMatch[1]);
+      tradeAds = playerData.trade_ad_count || 0;
+    }
+  } catch (error) {
+    // If HTML extraction fails, try Puppeteer
+  }
+  
+  // If private inventory detected, return early
+  if (isPrivate) {
+    const avatarUrl = await fetchRobloxAvatar(robloxUserId);
+    return { 
+      value: 'Unknown',
+      tradeAds, 
+      avatarUrl, 
+      rolimonsUrl 
+    };
+  }
+  
+  // METHOD 2: Roblox API (FASTEST - ~200-500ms for RAP + avatar)
   try {
     const [rap, avatarUrl] = await Promise.all([
       fetchRobloxRAP(robloxUserId),
       fetchRobloxAvatar(robloxUserId)
     ]);
-    
-    // METHOD 2: Get trade ads from Rolimons HTML (fast - ~200ms)
-    let tradeAds = 0;
-    try {
-      const response = await axios.get(rolimonsUrl, {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-          'Accept': 'text/html'
-        },
-        timeout: 2000
-      });
-      
-      const html = response.data;
-      const playerDataMatch = html.match(/var\s+player_details_data\s*=\s*({[^;]+});/);
-      if (playerDataMatch) {
-        const playerData = JSON.parse(playerDataMatch[1]);
-        tradeAds = playerData.trade_ad_count || 0;
-      }
-    } catch (error) {
-      // If HTML extraction fails, try Puppeteer for trade ads
-    }
     
     // Use RAP as value (Roblox API doesn't have Rolimons' "value", but RAP is similar)
     return { 
@@ -218,8 +237,13 @@ async function scrapeRolimonsPuppeteer(robloxUserId) {
       try {
         const valueElem = document.getElementById('player_value');
         if (valueElem) {
-          const valueText = valueElem.textContent.replace(/,/g, '').trim();
-          value = parseInt(valueText) || 0;
+          const valueText = valueElem.textContent.replace(/,/g, '').trim().toLowerCase();
+          // Check if value is "Unknown" (private inventory)
+          if (valueText === 'unknown' || valueText.includes('unknown')) {
+            value = 'Unknown';
+          } else {
+            value = parseInt(valueText) || 0;
+          }
         }
       } catch (e) {}
       
@@ -482,49 +506,89 @@ client.on('messageCreate', async (message) => {
       console.log(`[Monitor] ⚠ Could not extract Discord tag from embed. Title: ${embed.title}, Description: ${embed.description?.substring(0, 100)}`);
     }
 
-    if (!robloxUserId) return;
-
-    // MATCHING LOGIC: Match by Discord tag only (all info is in the embed)
-    let messageData = null;
-    
-    if (!discordTag) {
-      console.log(`[Monitor] ⚠ Received whois response but Discord tag not found in embed. Ignoring.`);
-      return;
-    }
-    
-    // Match by Discord username/tag (e.g., "jakrouse#0")
-    console.log(`[Monitor] Attempting to match Discord tag: ${discordTag}`);
-    console.log(`[Monitor] Pending requests (${pendingWhoisRequests.size}):`, Array.from(pendingWhoisRequests.entries()).map(([id, data]) => `${data.discordTag} (${id})`).join(', '));
-    
-    for (const [id, data] of pendingWhoisRequests.entries()) {
-      console.log(`[Monitor] Comparing: "${discordTag}" === "${data.discordTag}" ? ${discordTag === data.discordTag}`);
-      if (data.discordTag === discordTag && !processedUsers.has(id)) {
-        messageData = data;
-        discordId = id;
-        pendingWhoisRequests.delete(id);
-        console.log(`[Monitor] ✓ Matched whois response by Discord tag: ${discordTag} -> ${discordId} (${messageData.discordTag})`);
-        break;
-      }
-    }
-    
-    if (!messageData) {
-      console.log(`[Monitor] ⚠ Received whois response for Discord tag ${discordTag}, but no matching pending request found. Ignoring.`);
+    if (!robloxUserId || !discordTag) {
+      console.log(`[Monitor] ⚠ Received whois response but missing Roblox User ID or Discord tag. Ignoring.`);
       return;
     }
 
-    if (!messageData || processedUsers.has(discordId)) {
-      console.log(`[Monitor] Skipping whois response - user already processed: ${discordId}`);
-      return;
-    }
-
+    // Process directly from embed - no matching needed
+    // Remove discriminator from Discord tag
+    const discordUsername = discordTag.split('#')[0];
+    
+    console.log(`[Monitor] Processing whois response for ${discordTag} (Roblox ID: ${robloxUserId})`);
+    
     // Process immediately without waiting for other users (parallel processing)
-    processUser(discordId, robloxUserId, messageData).catch(err => {
-      console.error(`[Monitor] Error processing user ${discordId}:`, err.message);
+    processUserFromEmbed(discordTag, discordUsername, robloxUserId).catch(err => {
+      console.error(`[Monitor] Error processing user ${discordTag}:`, err.message);
     });
   }
 });
 
-// Separate function for processing - allows parallel execution
+// Process user directly from embed data (no matching needed)
+async function processUserFromEmbed(discordTag, discordUsername, robloxUserId) {
+  const { value, tradeAds, avatarUrl, rolimonsUrl } = await scrapeRolimons(robloxUserId);
+  console.log(`[Monitor] Scraped value: ${value}, tradeAds: ${tradeAds} for ${discordTag}`);
+
+  // Check if inventory is private (value is "Unknown" or similar)
+  const isPrivateInventory = (typeof value === 'string' && value.toLowerCase().includes('unknown')) || 
+                             (typeof value === 'number' && value === 0 && tradeAds === 0);
+  
+  if (isPrivateInventory) {
+    // Send to private inventory webhook
+    try {
+      await axios.post(PRIVATE_INVENTORY_WEBHOOK_URL, {
+        content: '@everyone',
+        embeds: [
+          {
+            title: 'Private Inventory Detected',
+            description: `**Discord:** ${discordUsername}\n**Roblox User ID:** ${robloxUserId}\n**Value:** Unknown (Private Inventory)\n[Rolimons Profile](${rolimonsUrl})`,
+            color: 0xff9900,
+            thumbnail: { url: avatarUrl }
+          }
+        ]
+      });
+      console.log(`[Monitor] ✓ Sent private inventory webhook for ${discordTag}`);
+    } catch (error) {
+      console.error('Error sending private inventory webhook:', error.message);
+    }
+    return;
+  }
+
+  // Check if trade ads is over 1,000 - if so, skip this user
+  if (tradeAds >= 1000) {
+    console.log(`[Monitor] User has too many trade ads (${tradeAds} >= 1000), skipping...`);
+    return;
+  }
+
+  // Check if value meets threshold (100k) - skip if value is "Unknown"
+  if (typeof value === 'number' && value >= VALUE_THRESHOLD) {
+    try {
+      await axios.post(WEBHOOK_URL, {
+        content: '@everyone',
+        embeds: [
+          {
+            title: 'User Detected',
+            description: `**Discord:** ${discordUsername}\n**Roblox User ID:** ${robloxUserId}\n[Rolimons Profile](${rolimonsUrl})`,
+            color: 0x00ff00
+          },
+          {
+            title: 'Rolimons Info',
+            description: `**Value:** ${typeof value === 'number' ? value.toLocaleString() : value}\n**Trade Ads:** ${tradeAds}\n[Rolimons Profile](${rolimonsUrl})`,
+            color: 0x00ff00,
+            thumbnail: { url: avatarUrl }
+          }
+        ]
+      });
+      console.log(`[Monitor] ✓ Sent webhook for ${discordTag} with value ${typeof value === 'number' ? value.toLocaleString() : value}!`);
+    } catch (error) {
+      console.error('Error sending webhook:', error.message);
+    }
+  } else {
+    console.log(`[Monitor] User did not meet value requirement (${typeof value === 'number' ? value.toLocaleString() : value} < ${VALUE_THRESHOLD.toLocaleString()}).`);
+  }
+}
+
+// Separate function for processing - allows parallel execution (legacy, kept for compatibility)
 async function processUser(discordId, robloxUserId, messageData) {
   const { value, tradeAds, avatarUrl, rolimonsUrl } = await scrapeRolimons(robloxUserId);
   console.log(`[Monitor] Scraped value: ${value.toLocaleString()}, tradeAds: ${tradeAds} for ${messageData.discordTag}`);
