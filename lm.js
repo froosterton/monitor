@@ -1,5 +1,7 @@
 const { Client } = require('discord.js-selfbot-v13');
 const axios = require('axios');
+const { Builder, By } = require('selenium-webdriver');
+const chrome = require('selenium-webdriver/chrome');
 
 // Use environment variable for token (more secure)
 const TOKEN = process.env.DISCORD_TOKEN
@@ -49,52 +51,87 @@ async function fetchBlockedUsers() {
   }
 }
 
-// Fetch Rolimons data using their API instead of Selenium
-async function fetchRolimonsData(robloxUserId) {
-  const rolimonsUrl = `https://www.rolimons.com/player/${robloxUserId}`;
-  
+let driver;
+
+async function initializeWebDriver() {
   try {
-    // Fetch user data from Rolimons API
-    const response = await axios.get(`https://api.rolimons.com/players/v1/playerinfo/${robloxUserId}`, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-      },
-      timeout: 10000
-    });
-
-    let value = 0;
-    let tradeAds = 0;
-    let avatarUrl = '';
-
-    if (response.data && response.data.success) {
-      const data = response.data;
-      value = data.value || 0;
-      tradeAds = data.trade_ads_count || 0;
-    }
-
-    // Fetch avatar from Roblox API
-    try {
-      const avatarResponse = await axios.get(`https://thumbnails.roblox.com/v1/users/avatar-headshot?userIds=${robloxUserId}&size=150x150&format=Png`);
-      if (avatarResponse.data && avatarResponse.data.data && avatarResponse.data.data.length > 0) {
-        avatarUrl = avatarResponse.data.data[0].imageUrl;
-      }
-    } catch (avatarError) {
-      console.error('Error fetching avatar:', avatarError.message);
-    }
-
-    return { value, tradeAds, avatarUrl, rolimonsUrl };
-  } catch (error) {
-    console.error('Error fetching Rolimons data via API:', error.message);
+    console.log('🔧 Initializing Selenium WebDriver...');
+    const options = new chrome.Options();
     
-    // Fallback: try to get basic info from Roblox API
+    // Cloud-optimized Chrome options
+    options.addArguments(
+        '--headless',
+        '--no-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-gpu',
+        '--disable-web-security',
+        '--disable-features=VizDisplayCompositor',
+        '--disable-extensions',
+        '--disable-plugins',
+        '--memory-pressure-off',
+        '--max_old_space_size=4096'
+    );
+    
+    // Set Chrome binary path for cloud environments
+    if (process.env.NODE_ENV === 'production') {
+        options.setChromeBinaryPath('/usr/bin/chromium');
+    }
+    
+    driver = await new Builder()
+        .forBrowser('chrome')
+        .setChromeOptions(options)
+        .build();
+        
+    console.log('✅ Selenium WebDriver initialized successfully');
+  } catch (error) {
+    console.error('❌ WebDriver initialization error:', error.message);
+  }
+}
+
+async function scrapeRolimons(robloxUserId) {
+  if (!driver) {
+    console.error('WebDriver not initialized');
+    return { value: 0, tradeAds: 0, avatarUrl: '', rolimonsUrl: `https://www.rolimons.com/player/${robloxUserId}` };
+  }
+
+  const url = `https://www.rolimons.com/player/${robloxUserId}`;
+  try {
+    await driver.get(url);
+    await driver.sleep(3000);
+
+    let value = 0, tradeAds = 0, avatarUrl = '';
+    
     try {
-      const avatarResponse = await axios.get(`https://thumbnails.roblox.com/v1/users/avatar-headshot?userIds=${robloxUserId}&size=150x150&format=Png`);
-      if (avatarResponse.data && avatarResponse.data.data && avatarResponse.data.data.length > 0) {
-        avatarUrl = avatarResponse.data.data[0].imageUrl;
-      }
+      const valueElem = await driver.findElement(By.id('player_value'));
+      value = parseInt((await valueElem.getText()).replace(/,/g, '')) || 0;
     } catch {}
     
-    return { value: 0, tradeAds: 0, avatarUrl, rolimonsUrl };
+    try {
+      // Look specifically for the Trade Ads Created container
+      const tradeAdsContainer = await driver.findElement(By.css('.trade-ads-created-container'));
+      const tradeAdsElem = await tradeAdsContainer.findElement(By.css('span.card-title.mb-1.text-light.stat-data.text-nowrap'));
+      tradeAds = parseInt((await tradeAdsElem.getText()).replace(/,/g, '')) || 0;
+    } catch {
+      // Fallback: try to find by the header text "Trade Ads Created"
+      try {
+        const headers = await driver.findElements(By.xpath('//h6[contains(text(), "Trade Ads Created")]'));
+        if (headers.length > 0) {
+          const parent = await headers[0].findElement(By.xpath('..'));
+          const tradeAdsElem = await parent.findElement(By.css('span.card-title.mb-1.text-light.stat-data.text-nowrap'));
+          tradeAds = parseInt((await tradeAdsElem.getText()).replace(/,/g, '')) || 0;
+        }
+      } catch {}
+    }
+    
+    try {
+      const avatarElem = await driver.findElement(By.css('img.mx-auto.d-block.w-100.h-100'));
+      avatarUrl = await avatarElem.getAttribute('src');
+    } catch {}
+    
+    return { value, tradeAds, avatarUrl, rolimonsUrl: url };
+  } catch (error) {
+    console.error('Error scraping Rolimons:', error.message);
+    return { value: 0, tradeAds: 0, avatarUrl: '', rolimonsUrl: url };
   }
 }
 
@@ -108,6 +145,7 @@ let lookupAttempted = new Set(); // Users we've already tried to look up (preven
 client.on('ready', async () => {
   console.log(`[Monitor] Logged in as ${client.user.tag}`);
   await fetchBlockedUsers();
+  await initializeWebDriver();
   console.log(`[Monitor] Bot ready and monitoring ${MONITOR_CHANNEL_IDS.length} channels!`);
   console.log(`[Monitor] Channels: ${MONITOR_CHANNEL_IDS.join(', ')}`);
   console.log(`[Monitor] Channel mapping:`, CHANNEL_MAPPING);
@@ -163,7 +201,7 @@ client.on('messageCreate', async (message) => {
     channelId: message.channel.id,
     channelName: message.channel.name,
     whoisChannelId: whoisChannelId,
-    messageUrl: messageUrl  // Store the message URL
+    messageUrl: messageUrl  // Added: Store message URL
   });
   
   const whoisChannel = await client.channels.fetch(whoisChannelId);
@@ -200,12 +238,13 @@ client.on('messageCreate', async (message) => {
     if (!robloxUserId) return;
 
     // Find the pending request that matches this Roblox user ID
+    // We'll need to scrape Rolimons to get the Discord ID, so we check all pending
     for (const [discordId, msg] of pendingRoblox.entries()) {
       if (processedUsers.has(discordId)) continue;
       
-      // Fetch Rolimons data using API instead of Selenium
-      const { value, tradeAds, avatarUrl, rolimonsUrl } = await fetchRolimonsData(robloxUserId);
-      console.log(`[Monitor] Fetched value: ${value}, tradeAds: ${tradeAds}`);
+      // Scrape Rolimons and check value
+      const { value, tradeAds, avatarUrl, rolimonsUrl } = await scrapeRolimons(robloxUserId);
+      console.log(`[Monitor] Scraped value: ${value}, tradeAds: ${tradeAds}`);
       
       // Check if trade ads is over 1,000 - if so, skip this user
       if (tradeAds >= 1000) {
@@ -230,7 +269,7 @@ client.on('messageCreate', async (message) => {
             embeds: [
               {
                 title: 'User Message',
-                description: `**Message:** ${msg.content}\n**Discord:** ${msg.discordTag}\n**Channel:** #${msg.channelName}\n\n[Jump To Message](${msg.messageUrl})`,
+                description: `**Message:** ${msg.content}\n**Discord:** ${msg.discordTag}\n**Channel:** #${msg.channelName}\n\n[Jump To Message](${msg.messageUrl})`,  // Added: Jump To Message link
                 color: 0x00ff00
               },
               {
@@ -272,6 +311,9 @@ process.on('unhandledRejection', (error) => {
 
 process.on('SIGINT', async () => {
   console.log('Shutting down...');
+  if (driver) {
+    await driver.quit();
+  }
   process.exit(0);
 });
 
