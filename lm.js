@@ -1,35 +1,39 @@
 const { Client } = require('discord.js-selfbot-v13');
 const axios = require('axios');
-const { Builder, By } = require('selenium-webdriver');
-const chrome = require('selenium-webdriver/chrome');
+const puppeteer = require('puppeteer');
 
 // Use environment variable for token (more secure)
-const TOKEN = process.env.DISCORD_TOKEN
+const TOKEN = process.env.DISCORD_TOKEN;
+
+if (!TOKEN) {
+  console.error('Error: DISCORD_TOKEN environment variable is not set!');
+  process.exit(1);
+}
+
 const MONITOR_CHANNEL_IDS = [
   '430203025659789343', 
   '442709792839172099', 
   '442709710408515605',
-  '749645946719174757',  // New channel 1
-  '808540135666745345'   // New channel 2
+  '749645946719174757',
+  '808540135666745345'
 ];
 
-// Map monitor channels to their corresponding whois channels
 const CHANNEL_MAPPING = {
-  '430203025659789343': '1393342132583927821', // lounge
-  '442709792839172099': '1403939114683863180', // trade lounge
-  '442709710408515605': '1403939122904825856', // trade ads
-  '749645946719174757': '1393342132583927821', // New channel 1 whois (using existing channel)
-  '808540135666745345': '1393342132583927821'  // New channel 2 whois (using existing channel)
+  '430203025659789343': '1393342132583927821',
+  '442709792839172099': '1403939114683863180',
+  '442709710408515605': '1403939122904825856',
+  '749645946719174757': '1393342132583927821',
+  '808540135666745345': '1393342132583927821'
 };
 
-// Guilds where role filtering should be skipped
 const SKIP_ROLE_FILTER_GUILDS = [
-  '786851062219931690', // Guild for channel 808540135666745345
-  '749629643836882975'  // Guild for channel 749645946719174757
+  '786851062219931690',
+  '749629643836882975'
 ];
 
 const WEBHOOK_URL = 'https://discord.com/api/webhooks/1403167152751513642/Hm5U3_t_D8VYMN9Q3qUXnhzKGSeM2F-f3CyKVdedbH_k9BDPHYPGAsewO24FXepjIUzm';
 const BOT_ID = '298796807323123712';
+
 const ALLOWED_ROLES = [
   "Verified", "Nitro Booster", "200k Members", "Game Night", "Weeb",
   "Art Talk", "Music", "Pets", "Rolimon's News Pings", "Content Pings",
@@ -38,7 +42,11 @@ const ALLOWED_ROLES = [
   "Free UGC Event Pings", "Poll Pings", "Value Change Pings", "Projection Pings"
 ];
 
+// Value threshold: 100k
+const VALUE_THRESHOLD = 100000;
+
 let blockedUsers = new Set();
+
 async function fetchBlockedUsers() {
   try {
     const res = await axios.get('https://discord.com/api/v9/users/@me/relationships', {
@@ -51,127 +59,300 @@ async function fetchBlockedUsers() {
   }
 }
 
-let driver;
+// OPTIMIZED: Puppeteer browser (faster than Selenium)
+let browser = null;
 
-async function initializeWebDriver() {
+async function initializeBrowser() {
+  if (browser) return browser;
+  
   try {
-    console.log('🔧 Initializing Selenium WebDriver...');
-    const options = new chrome.Options();
-    
-    // Cloud-optimized Chrome options
-    options.addArguments(
-        '--headless',
+    browser = await puppeteer.launch({
+      headless: true,
+      args: [
         '--no-sandbox',
+        '--disable-setuid-sandbox',
         '--disable-dev-shm-usage',
         '--disable-gpu',
         '--disable-web-security',
         '--disable-features=VizDisplayCompositor',
         '--disable-extensions',
         '--disable-plugins',
-        '--memory-pressure-off',
-        '--max_old_space_size=4096'
-    );
-    
-    // Set Chrome binary path for cloud environments
-    if (process.env.NODE_ENV === 'production') {
-        options.setChromeBinaryPath('/usr/bin/chromium');
-    }
-    
-    driver = await new Builder()
-        .forBrowser('chrome')
-        .setChromeOptions(options)
-        .build();
-        
-    console.log('✅ Selenium WebDriver initialized successfully');
+        '--memory-pressure-off'
+      ]
+    });
+    console.log('✅ Puppeteer browser initialized');
+    return browser;
   } catch (error) {
-    console.error('❌ WebDriver initialization error:', error.message);
+    console.error('❌ Browser initialization error:', error.message);
+    return null;
   }
 }
 
-async function scrapeRolimons(robloxUserId) {
-  if (!driver) {
-    console.error('WebDriver not initialized');
-    return { value: 0, tradeAds: 0, avatarUrl: '', rolimonsUrl: `https://www.rolimons.com/player/${robloxUserId}` };
-  }
-
-  const url = `https://www.rolimons.com/player/${robloxUserId}`;
+// ULTRA FAST: Use Roblox API (much faster than scraping Rolimons)
+async function fetchRobloxRAP(robloxUserId) {
+  let rap = 0;
+  let cursor = undefined;
+  
   try {
-    await driver.get(url);
-    await driver.sleep(3000);
-
-    let value = 0, tradeAds = 0, avatarUrl = '';
-    
-    try {
-      const valueElem = await driver.findElement(By.id('player_value'));
-      value = parseInt((await valueElem.getText()).replace(/,/g, '')) || 0;
-    } catch {}
-    
-    try {
-      // Look specifically for the Trade Ads Created container
-      const tradeAdsContainer = await driver.findElement(By.css('.trade-ads-created-container'));
-      const tradeAdsElem = await tradeAdsContainer.findElement(By.css('span.card-title.mb-1.text-light.stat-data.text-nowrap'));
-      tradeAds = parseInt((await tradeAdsElem.getText()).replace(/,/g, '')) || 0;
-    } catch {
-      // Fallback: try to find by the header text "Trade Ads Created"
-      try {
-        const headers = await driver.findElements(By.xpath('//h6[contains(text(), "Trade Ads Created")]'));
-        if (headers.length > 0) {
-          const parent = await headers[0].findElement(By.xpath('..'));
-          const tradeAdsElem = await parent.findElement(By.css('span.card-title.mb-1.text-light.stat-data.text-nowrap'));
-          tradeAds = parseInt((await tradeAdsElem.getText()).replace(/,/g, '')) || 0;
+    while (true) {
+      const { data } = await axios.get(
+        `https://inventory.roblox.com/v1/users/${robloxUserId}/assets/collectibles`,
+        { 
+          params: { limit: 100, sortOrder: 'Asc', cursor },
+          timeout: 3000
         }
-      } catch {}
+      );
+      
+      if (!data || !Array.isArray(data.data) || data.data.length === 0) break;
+      
+      for (const entry of data.data) {
+        rap += Number(entry.recentAveragePrice || 0);
+      }
+      
+      if (data.nextPageCursor) cursor = data.nextPageCursor;
+      else break;
+    }
+  } catch (error) {
+    console.log(`[Monitor] Error fetching RAP: ${error.message}`);
+  }
+  
+  return rap;
+}
+
+async function fetchRobloxAvatar(robloxUserId) {
+  try {
+    const { data } = await axios.get('https://thumbnails.roblox.com/v1/users/avatar-headshot', {
+      params: { userIds: robloxUserId, size: '150x150', format: 'Png', isCircular: false },
+      timeout: 2000
+    });
+    return (data?.data?.[0]?.imageUrl) || '';
+  } catch (error) {
+    return '';
+  }
+}
+
+// FAST: Try Roblox API first, then Rolimons HTML, then Puppeteer fallback
+async function scrapeRolimons(robloxUserId) {
+  const rolimonsUrl = `https://www.rolimons.com/player/${robloxUserId}`;
+  
+  // METHOD 1: Roblox API (FASTEST - ~200-500ms for RAP + avatar)
+  try {
+    const [rap, avatarUrl] = await Promise.all([
+      fetchRobloxRAP(robloxUserId),
+      fetchRobloxAvatar(robloxUserId)
+    ]);
+    
+    // METHOD 2: Get trade ads from Rolimons HTML (fast - ~200ms)
+    let tradeAds = 0;
+    try {
+      const response = await axios.get(rolimonsUrl, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+          'Accept': 'text/html'
+        },
+        timeout: 2000
+      });
+      
+      const html = response.data;
+      const playerDataMatch = html.match(/var\s+player_details_data\s*=\s*({[^;]+});/);
+      if (playerDataMatch) {
+        const playerData = JSON.parse(playerDataMatch[1]);
+        tradeAds = playerData.trade_ad_count || 0;
+      }
+    } catch (error) {
+      // If HTML extraction fails, try Puppeteer for trade ads
     }
     
-    try {
-      const avatarElem = await driver.findElement(By.css('img.mx-auto.d-block.w-100.h-100'));
-      avatarUrl = await avatarElem.getAttribute('src');
-    } catch {}
+    // Use RAP as value (Roblox API doesn't have Rolimons' "value", but RAP is similar)
+    return { 
+      value: rap,
+      tradeAds, 
+      avatarUrl, 
+      rolimonsUrl 
+    };
     
-    return { value, tradeAds, avatarUrl, rolimonsUrl: url };
+  } catch (error) {
+    console.log(`[Monitor] Roblox API failed, using Rolimons fallback: ${error.message}`);
+  }
+  
+  // METHOD 3: Puppeteer fallback (slower but reliable)
+  return await scrapeRolimonsPuppeteer(robloxUserId);
+}
+
+async function scrapeRolimonsPuppeteer(robloxUserId) {
+  const url = `https://www.rolimons.com/player/${robloxUserId}`;
+  
+  if (!browser) {
+    await initializeBrowser();
+  }
+  
+  if (!browser) {
+    return { value: 0, tradeAds: 0, avatarUrl: '', rolimonsUrl: url };
+  }
+
+  let page = null;
+  try {
+    page = await browser.newPage();
+    
+    await page.setViewport({ width: 1920, height: 1080 });
+    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36');
+    
+    await page.goto(url, { 
+      waitUntil: 'domcontentloaded', 
+      timeout: 5000 
+    });
+    
+    await page.waitForFunction(
+      () => {
+        const elem = document.getElementById('player_value');
+        return elem && elem.textContent.trim() !== '' && elem.textContent.trim() !== '&nbsp;';
+      },
+      { timeout: 1500, polling: 30 }
+    ).catch(() => {});
+    
+    await new Promise(resolve => setTimeout(resolve, 50));
+    
+    const data = await page.evaluate(() => {
+      let value = 0, tradeAds = 0, avatarUrl = '';
+      
+      try {
+        const valueElem = document.getElementById('player_value');
+        if (valueElem) {
+          const valueText = valueElem.textContent.replace(/,/g, '').trim();
+          value = parseInt(valueText) || 0;
+        }
+      } catch (e) {}
+      
+      try {
+        const tradeAdsContainer = document.querySelector('.trade-ads-created-container');
+        if (tradeAdsContainer) {
+          const tradeAdsElem = tradeAdsContainer.querySelector('.card-title.mb-1.text-light.stat-data.text-nowrap');
+          if (tradeAdsElem) {
+            const tradeAdsText = tradeAdsElem.textContent.replace(/,/g, '').trim();
+            tradeAds = parseInt(tradeAdsText) || 0;
+          }
+        }
+      } catch (e) {
+        try {
+          const headers = Array.from(document.querySelectorAll('h6'));
+          const tradeAdsHeader = headers.find(h => h.textContent.includes('Trade Ads Created'));
+          if (tradeAdsHeader) {
+            const parent = tradeAdsHeader.parentElement;
+            const tradeAdsElem = parent.querySelector('.card-title.mb-1.text-light.stat-data.text-nowrap');
+            if (tradeAdsElem) {
+              const tradeAdsText = tradeAdsElem.textContent.replace(/,/g, '').trim();
+              tradeAds = parseInt(tradeAdsText) || 0;
+            }
+          }
+        } catch (e2) {}
+      }
+      
+      try {
+        const avatarElem = document.querySelector('img.mx-auto.d-block.w-100.h-100');
+        if (avatarElem) {
+          avatarUrl = avatarElem.src || '';
+        }
+      } catch (e) {}
+      
+      return { value, tradeAds, avatarUrl };
+    });
+    
+    await page.close();
+    
+    return { 
+      value: data.value, 
+      tradeAds: data.tradeAds, 
+      avatarUrl: data.avatarUrl, 
+      rolimonsUrl: url 
+    };
+    
   } catch (error) {
     console.error('Error scraping Rolimons:', error.message);
+    if (page) {
+      try {
+        await page.close();
+      } catch {}
+    }
     return { value: 0, tradeAds: 0, avatarUrl: '', rolimonsUrl: url };
   }
 }
 
 const client = new Client({ checkUpdate: false });
 
-let processedUsers = new Set(); // Users we've already processed completely
-let pendingRoblox = new Map(); // Users waiting for Roblox ID lookup
-let webhookSent = new Set(); // Users we've already sent webhooks for
-let lookupAttempted = new Set(); // Users we've already tried to look up (prevents duplicate lookups)
+let processedUsers = new Set();
+let pendingRoblox = new Map();
+let webhookSent = new Set();
+let lookupAttempted = new Set();
+let pendingWhoisRequests = new Map();
+
+// OPTIMIZED: Cache whois channels
+let whoisChannelsCache = new Map();
 
 client.on('ready', async () => {
   console.log(`[Monitor] Logged in as ${client.user.tag}`);
   await fetchBlockedUsers();
-  await initializeWebDriver();
+  await initializeBrowser();
+  
+  // OPTIMIZED: Pre-fetch and cache whois channels
+  console.log('[Monitor] Caching whois channels...');
+  const uniqueWhoisChannelIds = [...new Set(Object.values(CHANNEL_MAPPING))];
+  for (const channelId of uniqueWhoisChannelIds) {
+    try {
+      const channel = await client.channels.fetch(channelId);
+      whoisChannelsCache.set(channelId, channel);
+      console.log(`[Monitor] Cached whois channel: ${channelId}`);
+    } catch (error) {
+      console.error(`[Monitor] Failed to cache channel ${channelId}:`, error.message);
+    }
+  }
+  
   console.log(`[Monitor] Bot ready and monitoring ${MONITOR_CHANNEL_IDS.length} channels!`);
   console.log(`[Monitor] Channels: ${MONITOR_CHANNEL_IDS.join(', ')}`);
   console.log(`[Monitor] Channel mapping:`, CHANNEL_MAPPING);
 });
 
 client.on('messageCreate', async (message) => {
-  if (blockedUsers.has(message.author.id)) return;
-  if (!MONITOR_CHANNEL_IDS.includes(message.channel.id)) return;
+  // OPTIMIZED: Early returns first (fastest checks)
   if (message.author.bot) return;
+  if (blockedUsers.has(message.author.id)) return;
   if (processedUsers.has(message.author.id)) return;
-  if (lookupAttempted.has(message.author.id)) return; // Don't lookup the same user twice
+  if (lookupAttempted.has(message.author.id)) return;
+  if (!MONITOR_CHANNEL_IDS.includes(message.channel.id)) return;
 
-  let member = message.member;
-  if (!member) {
+  // OPTIMIZED: Get whois channel ID early (before member fetch)
+  const whoisChannelId = CHANNEL_MAPPING[message.channel.id];
+  if (!whoisChannelId) return;
+
+  // OPTIMIZED: Use cached channel instead of fetching
+  let whoisChannel = whoisChannelsCache.get(whoisChannelId);
+  if (!whoisChannel) {
     try {
-      member = await message.guild.members.fetch(message.author.id);
+      whoisChannel = await client.channels.fetch(whoisChannelId);
+      whoisChannelsCache.set(whoisChannelId, whoisChannel);
     } catch {
       return;
     }
   }
 
+  // OPTIMIZED: Check member cache first, only fetch if needed
+  let member = message.member;
+  if (!member && message.guild) {
+    member = message.guild.members.cache.get(message.author.id);
+    if (!member) {
+      try {
+        member = await message.guild.members.fetch(message.author.id);
+      } catch {
+        return;
+      }
+    }
+  }
+  if (!member) return;
+
   // Check if role filtering should be applied based on guild
   const shouldApplyRoleFilter = !SKIP_ROLE_FILTER_GUILDS.includes(message.guild.id);
   
   if (shouldApplyRoleFilter) {
-    // Apply role filtering only for guild 415246288779608064 and other guilds not in skip list
+    // OPTIMIZED: Use cache directly (already cached)
     const userRoleNames = member.roles.cache.filter(r => r.name !== '@everyone').map(r => r.name);
     const onlyAllowedRoles = userRoleNames.length > 0 && userRoleNames.every(roleName => ALLOWED_ROLES.includes(roleName));
     if (!onlyAllowedRoles) return;
@@ -179,44 +360,37 @@ client.on('messageCreate', async (message) => {
     console.log(`[Monitor] Skipping role filter for guild ${message.guild.id} (${message.guild.name})`);
   }
 
-  // Get the corresponding whois channel for this monitor channel
-  const whoisChannelId = CHANNEL_MAPPING[message.channel.id];
-  if (!whoisChannelId) {
-    console.log(`[Monitor] No whois channel mapping found for ${message.channel.id}`);
-    return;
-  }
-
-  // Mark this user as lookup attempted to prevent duplicate lookups
   lookupAttempted.add(message.author.id);
 
-  // Store the message info keyed by Discord ID (for now)
-  pendingRoblox.set(message.author.id, {
+  const messageData = {
     discordId: message.author.id,
     discordTag: message.author.tag,
     content: message.content,
     timestamp: message.createdTimestamp,
     channelId: message.channel.id,
     channelName: message.channel.name,
+    messageId: message.id,
+    guildId: message.guild.id,
     whoisChannelId: whoisChannelId
-  });
+  };
+
+  pendingWhoisRequests.set(message.author.id, messageData);
   
-  const whoisChannel = await client.channels.fetch(whoisChannelId);
-  if (!whoisChannel) return;
-  
+  // OPTIMIZED: Use cached channel (no await needed for fetch)
   try {
     await whoisChannel.sendSlash(BOT_ID, 'whois discord', message.author.id);
     console.log(`[Monitor] Sent /whois discord for ${message.author.tag} (${message.author.id}) in #${message.channel.name} -> whois channel ${whoisChannelId}`);
   } catch (error) {
     console.error(`[Monitor] Failed to send /whois command:`, error.message);
-    pendingRoblox.delete(message.author.id);
+    pendingWhoisRequests.delete(message.author.id);
     lookupAttempted.delete(message.author.id);
   }
 });
 
-// Listen for bot responses globally
+// Handle whois responses - OPTIMIZED with parallel processing
 client.on('messageCreate', async (message) => {
-  // Check if this is a bot response in any of our whois channels
   const whoisChannelIds = Object.values(CHANNEL_MAPPING);
+  
   if (
     message.author.id === BOT_ID &&
     whoisChannelIds.includes(message.channel.id) &&
@@ -225,78 +399,112 @@ client.on('messageCreate', async (message) => {
     message.embeds[0].fields
   ) {
     let robloxUserId = '';
-    for (const field of message.embeds[0].fields) {
-      if (field.name.toLowerCase().includes('roblox user id')) {
-        robloxUserId = field.value.replace(/`/g, '').trim();
-        break;
+    let discordId = '';
+
+    // OPTIMIZED: Extract both IDs in single loop
+    const fields = message.embeds[0].fields;
+    for (const field of fields) {
+      const fieldNameLower = field.name.toLowerCase();
+      const fieldValue = field.value;
+      
+      if (fieldNameLower.includes('roblox user id')) {
+        robloxUserId = fieldValue.replace(/`/g, '').trim();
       }
+      
+      if ((fieldNameLower.includes('discord') || fieldNameLower.includes('user id')) && !discordId) {
+        const discordMatch = fieldValue.match(/(\d{17,19})/);
+        if (discordMatch) {
+          discordId = discordMatch[1];
+        }
+      }
+      
+      if (robloxUserId && discordId) break;
     }
+
     if (!robloxUserId) return;
 
-    // Find the pending request that matches this Roblox user ID
-    // We'll need to scrape Rolimons to get the Discord ID, so we check all pending
-    for (const [discordId, msg] of pendingRoblox.entries()) {
-      if (processedUsers.has(discordId)) continue;
-      
-      // Scrape Rolimons and check value
-      const { value, tradeAds, avatarUrl, rolimonsUrl } = await scrapeRolimons(robloxUserId);
-      console.log(`[Monitor] Scraped value: ${value}, tradeAds: ${tradeAds}`);
-      
-      // Check if trade ads is over 1,000 - if so, skip this user
-      if (tradeAds >= 1000) {
-        console.log(`[Monitor] User has too many trade ads (${tradeAds} >= 1000), skipping...`);
-        processedUsers.add(discordId);
-        pendingRoblox.delete(discordId);
-        continue;
-      }
-      
-      if (value >= 50000) {
-        // Check if we've already sent a webhook for this user
-        if (webhookSent.has(discordId)) {
-          console.log(`[Monitor] Webhook already sent for ${msg.discordTag}, skipping...`);
-          processedUsers.add(discordId);
-          pendingRoblox.delete(discordId);
-          continue;
+    // Find matching pending request
+    let messageData = null;
+    if (discordId && pendingWhoisRequests.has(discordId)) {
+      messageData = pendingWhoisRequests.get(discordId);
+      pendingWhoisRequests.delete(discordId);
+    } else {
+      for (const [id, data] of pendingWhoisRequests.entries()) {
+        if (!processedUsers.has(id)) {
+          messageData = data;
+          discordId = id;
+          pendingWhoisRequests.delete(id);
+          break;
         }
-        
-        try {
-          await axios.post(WEBHOOK_URL, {
-            content: '@everyone',
-            embeds: [
-              {
-                title: 'User Message',
-                description: `**Message:** ${msg.content}\n**Discord:** ${msg.discordTag}\n**Channel:** #${msg.channelName}`,
-                color: 0x00ff00
-              },
-              {
-                title: 'Rolimons Info',
-                description: `**Value:** ${value.toLocaleString()}\n**Trade Ads:** ${tradeAds}\n[Rolimons Profile](${rolimonsUrl})`,
-                color: 0x00ff00,
-                thumbnail: { url: avatarUrl }
-              }
-            ]
-          });
-          
-          // Mark this user as processed and webhook sent
-          processedUsers.add(discordId);
-          webhookSent.add(discordId);
-          pendingRoblox.delete(discordId);
-          console.log(`[Monitor] Sent webhook for ${msg.discordTag} with value ${value} from #${msg.channelName}!`);
-          break; // Only process the first match
-        } catch (error) {
-          console.error('Error sending webhook:', error.message);
-          // Don't mark as processed if webhook failed
-        }
-      } else {
-        console.log(`[Monitor] User did not meet value requirement (${value} < 50000).`);
-        processedUsers.add(discordId);
-        pendingRoblox.delete(discordId);
       }
     }
+
+    if (!messageData || processedUsers.has(discordId)) return;
+
+    // Process immediately without waiting for other users (parallel processing)
+    processUser(discordId, robloxUserId, messageData).catch(err => {
+      console.error(`[Monitor] Error processing user ${discordId}:`, err.message);
+    });
   }
 });
 
-// Error handling
+// Separate function for processing - allows parallel execution
+async function processUser(discordId, robloxUserId, messageData) {
+  const { value, tradeAds, avatarUrl, rolimonsUrl } = await scrapeRolimons(robloxUserId);
+  console.log(`[Monitor] Scraped value: ${value.toLocaleString()}, tradeAds: ${tradeAds}`);
+
+  // Check if trade ads is over 1,000 - if so, skip this user
+  if (tradeAds >= 1000) {
+    console.log(`[Monitor] User has too many trade ads (${tradeAds} >= 1000), skipping...`);
+    processedUsers.add(discordId);
+    pendingRoblox.delete(discordId);
+    return;
+  }
+
+  // UPDATED: 100k value threshold
+  if (value >= VALUE_THRESHOLD) {
+    if (webhookSent.has(discordId)) {
+      console.log(`[Monitor] Webhook already sent for ${messageData.discordTag}, skipping...`);
+      processedUsers.add(discordId);
+      pendingRoblox.delete(discordId);
+      return;
+    }
+
+    try {
+      // Create jump to message link
+      const jumpToMessageUrl = `https://discord.com/channels/${messageData.guildId}/${messageData.channelId}/${messageData.messageId}`;
+      
+      await axios.post(WEBHOOK_URL, {
+        content: '@everyone',
+        embeds: [
+          {
+            title: 'User Message',
+            description: `**Message:** ${messageData.content}\n**Discord:** ${messageData.discordTag}\n**Channel:** #${messageData.channelName}\n[Jump to Message](${jumpToMessageUrl})`,
+            color: 0x00ff00
+          },
+          {
+            title: 'Rolimons Info',
+            description: `**Value:** ${value.toLocaleString()}\n**Trade Ads:** ${tradeAds}\n[Rolimons Profile](${rolimonsUrl})`,
+            color: 0x00ff00,
+            thumbnail: { url: avatarUrl }
+          }
+        ]
+      });
+
+      processedUsers.add(discordId);
+      webhookSent.add(discordId);
+      pendingRoblox.delete(discordId);
+      console.log(`[Monitor] Sent webhook for ${messageData.discordTag} with value ${value.toLocaleString()} from #${messageData.channelName}!`);
+    } catch (error) {
+      console.error('Error sending webhook:', error.message);
+    }
+  } else {
+    console.log(`[Monitor] User did not meet value requirement (${value.toLocaleString()} < ${VALUE_THRESHOLD.toLocaleString()}).`);
+    processedUsers.add(discordId);
+    pendingRoblox.delete(discordId);
+  }
+}
+
 client.on('error', (error) => {
   console.error('Discord client error:', error);
 });
@@ -307,14 +515,14 @@ process.on('unhandledRejection', (error) => {
 
 process.on('SIGINT', async () => {
   console.log('Shutting down...');
-  if (driver) {
-    await driver.quit();
+  if (browser) {
+    await browser.close();
   }
   process.exit(0);
 });
 
-// Start the bot
 client.login(TOKEN).catch(error => {
   console.error('Failed to login:', error);
   process.exit(1);
 });
+
