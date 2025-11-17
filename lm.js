@@ -403,13 +403,15 @@ client.on('messageCreate', async (message) => {
   
   // OPTIMIZED: Use cached channel (no await needed for fetch)
   try {
-    // Try full command string format first
-    await whoisChannel.sendSlash(BOT_ID, 'whois discord', message.author.id);
+    // Try separate command and subcommand with user ID as string
+    await whoisChannel.sendSlash(BOT_ID, 'whois', 'discord', String(message.author.id));
     console.log(`[Monitor] Sent /whois discord for ${message.author.tag} (${message.author.id}) in #${message.channel.name} -> whois channel ${whoisChannelId}`);
   } catch (error) {
-    // Fallback: Try with subcommand and options array
+    // Fallback: Try with options array format
     try {
-      await whoisChannel.sendSlash(BOT_ID, 'whois', 'discord', [{ name: 'user', value: message.author.id }]);
+      await whoisChannel.sendSlash(BOT_ID, 'whois', [
+        { name: 'discord', value: String(message.author.id) }
+      ]);
       console.log(`[Monitor] Sent /whois discord (fallback format) for ${message.author.tag} (${message.author.id})`);
     } catch (error2) {
       console.error(`[Monitor] Failed to send /whois command:`, error.message);
@@ -532,7 +534,10 @@ async function processUserFromEmbed(discordTag, discordUsername, robloxUserId, m
   // Check if inventory is private (value is "Unknown" or similar)
   const isPrivateInventory = typeof value === 'string' && value.toLowerCase().includes('unknown');
   
-  if (isPrivateInventory) {
+  // Also check if value is 0 but user has trade ads (likely private inventory)
+  const isZeroWithTradeAds = typeof value === 'number' && value === 0 && tradeAds >= 1;
+  
+  if (isPrivateInventory || isZeroWithTradeAds) {
     // Send to private inventory webhook
     try {
       await axios.post(PRIVATE_INVENTORY_WEBHOOK_URL, {
@@ -540,13 +545,13 @@ async function processUserFromEmbed(discordTag, discordUsername, robloxUserId, m
         embeds: [
           {
             title: 'Private Inventory Detected',
-            description: `**Discord:** ${discordUsername}\n**Roblox User ID:** ${robloxUserId}\n**Value:** Unknown (Private Inventory)\n[Rolimons Profile](${rolimonsUrl})`,
+            description: `**Discord:** ${discordUsername}\n**Roblox User ID:** ${robloxUserId}\n**Value:** ${isPrivateInventory ? 'Unknown' : '0'} (Private Inventory)\n**Trade Ads:** ${tradeAds}\n[Rolimons Profile](${rolimonsUrl})`,
             color: 0xff9900,
             thumbnail: { url: avatarUrl }
           }
         ]
       });
-      console.log(`[Monitor] ✓ Sent private inventory webhook for ${discordTag}`);
+      console.log(`[Monitor] ✓ Sent private inventory webhook for ${discordTag} (${isPrivateInventory ? 'Unknown value' : 'Value 0 with trade ads'})`);
     } catch (error) {
       console.error('Error sending private inventory webhook:', error.message);
     }
