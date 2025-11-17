@@ -32,7 +32,6 @@ const SKIP_ROLE_FILTER_GUILDS = [
 ];
 
 const WEBHOOK_URL = 'https://discord.com/api/webhooks/1403167152751513642/Hm5U3_t_D8VYMN9Q3qUXnhzKGSeM2F-f3CyKVdedbH_k9BDPHYPGAsewO24FXepjIUzm';
-const PRIVATE_INVENTORY_WEBHOOK_URL = 'https://discord.com/api/webhooks/1439812793384697926/oa5Ey82H1YKDRwiu0wmKSLax_Q5iIyqu3MXcARJFitvjSI1l8rtce9MFaJZb-cML-R1L';
 const BOT_ID = '298796807323123712';
 
 const ALLOWED_ROLES = [
@@ -68,7 +67,7 @@ async function initializeBrowser() {
   
   try {
     browser = await puppeteer.launch({
-      headless: "new",
+      headless: true,
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
@@ -136,52 +135,33 @@ async function fetchRobloxAvatar(robloxUserId) {
 async function scrapeRolimons(robloxUserId) {
   const rolimonsUrl = `https://www.rolimons.com/player/${robloxUserId}`;
   
-  // METHOD 1: Check Rolimons HTML first to detect private inventory
-  let tradeAds = 0;
-  let isPrivate = false;
-  try {
-    const response = await axios.get(rolimonsUrl, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'Accept': 'text/html'
-      },
-      timeout: 2000
-    });
-    
-    const html = response.data;
-    
-    // Check for private inventory indicator - look for "Unknown" in value field
-    if (html.includes('inventory is private') || 
-        html.includes('id="player_value"') && html.match(/id="player_value"[^>]*>[\s\S]*?Unknown/i)) {
-      isPrivate = true;
-    }
-    
-    const playerDataMatch = html.match(/var\s+player_details_data\s*=\s*({[^;]+});/);
-    if (playerDataMatch) {
-      const playerData = JSON.parse(playerDataMatch[1]);
-      tradeAds = playerData.trade_ad_count || 0;
-    }
-  } catch (error) {
-    // If HTML extraction fails, try Puppeteer
-  }
-  
-  // If private inventory detected, return early
-  if (isPrivate) {
-    const avatarUrl = await fetchRobloxAvatar(robloxUserId);
-    return { 
-      value: 'Unknown',
-      tradeAds, 
-      avatarUrl, 
-      rolimonsUrl 
-    };
-  }
-  
-  // METHOD 2: Roblox API (FASTEST - ~200-500ms for RAP + avatar)
+  // METHOD 1: Roblox API (FASTEST - ~200-500ms for RAP + avatar)
   try {
     const [rap, avatarUrl] = await Promise.all([
       fetchRobloxRAP(robloxUserId),
       fetchRobloxAvatar(robloxUserId)
     ]);
+    
+    // METHOD 2: Get trade ads from Rolimons HTML (fast - ~200ms)
+    let tradeAds = 0;
+    try {
+      const response = await axios.get(rolimonsUrl, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+          'Accept': 'text/html'
+        },
+        timeout: 2000
+      });
+      
+      const html = response.data;
+      const playerDataMatch = html.match(/var\s+player_details_data\s*=\s*({[^;]+});/);
+      if (playerDataMatch) {
+        const playerData = JSON.parse(playerDataMatch[1]);
+        tradeAds = playerData.trade_ad_count || 0;
+      }
+    } catch (error) {
+      // If HTML extraction fails, try Puppeteer for trade ads
+    }
     
     // Use RAP as value (Roblox API doesn't have Rolimons' "value", but RAP is similar)
     return { 
@@ -238,13 +218,8 @@ async function scrapeRolimonsPuppeteer(robloxUserId) {
       try {
         const valueElem = document.getElementById('player_value');
         if (valueElem) {
-          const valueText = valueElem.textContent.replace(/,/g, '').trim().toLowerCase();
-          // Check if value is "Unknown" (private inventory)
-          if (valueText === 'unknown' || valueText.includes('unknown')) {
-            value = 'Unknown';
-          } else {
-            value = parseInt(valueText) || 0;
-          }
+          const valueText = valueElem.textContent.replace(/,/g, '').trim();
+          value = parseInt(valueText) || 0;
         }
       } catch (e) {}
       
@@ -403,42 +378,16 @@ client.on('messageCreate', async (message) => {
   
   // OPTIMIZED: Use cached channel (no await needed for fetch)
   try {
-    // Format: sendSlash(botId, command, subcommand, options)
-    // For /whois discord <user>, the user option might be named 'user' or 'target'
-    await whoisChannel.sendSlash(BOT_ID, 'whois', 'discord', [
-      { name: 'user', value: message.author.id, type: 6 }
-    ]);
+    await whoisChannel.sendSlash(BOT_ID, 'whois discord', message.author.id);
     console.log(`[Monitor] Sent /whois discord for ${message.author.tag} (${message.author.id}) in #${message.channel.name} -> whois channel ${whoisChannelId}`);
   } catch (error) {
-    // Fallback 1: Try with 'target' as option name
-    try {
-      await whoisChannel.sendSlash(BOT_ID, 'whois', 'discord', [
-        { name: 'target', value: message.author.id, type: 6 }
-      ]);
-      console.log(`[Monitor] Sent /whois discord (fallback: target) for ${message.author.tag} (${message.author.id})`);
-    } catch (error2) {
-      // Fallback 2: Try without type (as string)
-      try {
-        await whoisChannel.sendSlash(BOT_ID, 'whois', 'discord', [
-          { name: 'user', value: String(message.author.id) }
-        ]);
-        console.log(`[Monitor] Sent /whois discord (fallback: string) for ${message.author.tag} (${message.author.id})`);
-      } catch (error3) {
-        // Fallback 3: Try old format
-        try {
-          await whoisChannel.sendSlash(BOT_ID, 'whois', 'discord', String(message.author.id));
-          console.log(`[Monitor] Sent /whois discord (fallback: old format) for ${message.author.tag} (${message.author.id})`);
-        } catch (error4) {
-          console.error(`[Monitor] Failed to send /whois command:`, error4.message);
-          pendingWhoisRequests.delete(message.author.id);
-          lookupAttempted.delete(message.author.id);
-        }
-      }
-    }
+    console.error(`[Monitor] Failed to send /whois command:`, error.message);
+    pendingWhoisRequests.delete(message.author.id);
+    lookupAttempted.delete(message.author.id);
   }
 });
 
-// Handle whois responses - Process directly from embed
+// Handle whois responses - OPTIMIZED with parallel processing
 client.on('messageCreate', async (message) => {
   const whoisChannelIds = Object.values(CHANNEL_MAPPING);
   
@@ -450,13 +399,10 @@ client.on('messageCreate', async (message) => {
     message.embeds[0].fields
   ) {
     let robloxUserId = '';
-    let discordTag = '';
+    let discordId = '';
 
-    // Extract Roblox User ID and Discord username/tag from embed
-    const embed = message.embeds[0];
-    const fields = embed.fields || [];
-    
-    // Extract Roblox User ID from fields
+    // OPTIMIZED: Extract both IDs in single loop
+    const fields = message.embeds[0].fields;
     for (const field of fields) {
       const fieldNameLower = field.name.toLowerCase();
       const fieldValue = field.value;
@@ -464,157 +410,98 @@ client.on('messageCreate', async (message) => {
       if (fieldNameLower.includes('roblox user id')) {
         robloxUserId = fieldValue.replace(/`/g, '').trim();
       }
-    }
-    
-    // Extract Discord username/tag - check embed title, description, and fields
-    // The Discord username usually appears at the top of the embed (like "jakrouse#0")
-    if (embed.title) {
-      const titleMatch = embed.title.match(/([a-zA-Z0-9_.]+#\d+)/);
-      if (titleMatch) {
-        discordTag = titleMatch[1];
+      
+      if ((fieldNameLower.includes('discord') || fieldNameLower.includes('user id')) && !discordId) {
+        const discordMatch = fieldValue.match(/(\d{17,19})/);
+        if (discordMatch) {
+          discordId = discordMatch[1];
+        }
       }
+      
+      if (robloxUserId && discordId) break;
     }
-    
-    // Check description for Discord username (usually first line)
-    if (!discordTag && embed.description) {
-      const descMatch = embed.description.match(/([a-zA-Z0-9_.]+#\d+)/);
-      if (descMatch) {
-        discordTag = descMatch[1];
-      }
-    }
-    
-    // Also check the first line of description more specifically
-    if (!discordTag && embed.description) {
-      const firstLine = embed.description.split('\n')[0];
-      const firstLineMatch = firstLine.match(/([a-zA-Z0-9_.]+#\d+)/);
-      if (firstLineMatch) {
-        discordTag = firstLineMatch[1];
-      }
-    }
-    
-    // Check fields for Discord username
-    if (!discordTag) {
-      for (const field of fields) {
-        const fieldNameLower = field.name.toLowerCase();
-        const fieldValue = field.value;
-        
-        if (fieldNameLower.includes('discord')) {
-          const tagMatch = fieldValue.match(/([a-zA-Z0-9_.]+#\d+)/);
-          if (tagMatch) {
-            discordTag = tagMatch[1];
-            break;
-          }
+
+    if (!robloxUserId) return;
+
+    // Find matching pending request
+    let messageData = null;
+    if (discordId && pendingWhoisRequests.has(discordId)) {
+      messageData = pendingWhoisRequests.get(discordId);
+      pendingWhoisRequests.delete(discordId);
+    } else {
+      for (const [id, data] of pendingWhoisRequests.entries()) {
+        if (!processedUsers.has(id)) {
+          messageData = data;
+          discordId = id;
+          pendingWhoisRequests.delete(id);
+          break;
         }
       }
     }
-    
-    // Also check the embed author or footer
-    if (!discordTag && embed.author && embed.author.name) {
-      const authorMatch = embed.author.name.match(/([a-zA-Z0-9_.]+#\d+)/);
-      if (authorMatch) {
-        discordTag = authorMatch[1];
-      }
-    }
 
-    if (!robloxUserId || !discordTag) {
-      console.log(`[Monitor] ⚠ Received whois response but missing Roblox User ID or Discord tag. Ignoring.`);
-      return;
-    }
+    if (!messageData || processedUsers.has(discordId)) return;
 
-    // Try to find matching message data for jump link and message content
-    let messageData = null;
-    for (const [id, data] of pendingWhoisRequests.entries()) {
-      if (data.discordTag === discordTag && !processedUsers.has(id)) {
-        messageData = data;
-        pendingWhoisRequests.delete(id);
-        break;
-      }
-    }
-    
-    // Remove discriminator from Discord tag
-    const discordUsername = discordTag.split('#')[0];
-    
-    console.log(`[Monitor] Processing whois response for ${discordTag} (Roblox ID: ${robloxUserId})`);
-    
     // Process immediately without waiting for other users (parallel processing)
-    processUserFromEmbed(discordTag, discordUsername, robloxUserId, messageData).catch(err => {
-      console.error(`[Monitor] Error processing user ${discordTag}:`, err.message);
+    processUser(discordId, robloxUserId, messageData).catch(err => {
+      console.error(`[Monitor] Error processing user ${discordId}:`, err.message);
     });
   }
 });
 
-// Process user directly from embed data (messageData optional - for jump link and message content)
-async function processUserFromEmbed(discordTag, discordUsername, robloxUserId, messageData = null) {
-  const { value, tradeAds, avatarUrl, rolimonsUrl } = await scrapeRolimons(robloxUserId);\n  console.log(`[Monitor] Scraped value: ${value}, tradeAds: ${tradeAds} for ${discordTag}`);\n\n  // Ensure tradeAds is a number\n  const tradeAdsNum = Number(tradeAds) || 0;\n\n  // Check if inventory is private (value is "Unknown" or similar)\n  const isPrivateInventory = typeof value === 'string' && value.toLowerCase().includes('unknown');\n  \n  // Also check if value is 0 but user has trade ads (likely private inventory)\n  const isZeroWithTradeAds = typeof value === 'number' && value === 0 && tradeAdsNum >= 1;\n  \n  console.log(`[Monitor] Debug - isPrivateInventory: ${isPrivateInventory}, isZeroWithTradeAds: ${isZeroWithTradeAds}, value: ${value}, tradeAdsNum: ${tradeAdsNum}`);
-  
-  if (isPrivateInventory || isZeroWithTradeAds) {
-    // Send to private inventory webhook
-    try {
-      await axios.post(PRIVATE_INVENTORY_WEBHOOK_URL, {
-        content: '@everyone',
-        embeds: [
-          {
-            title: 'Private Inventory Detected',
-            description: `**Discord:** ${discordUsername}\n**Roblox User ID:** ${robloxUserId}\n**Value:** ${isPrivateInventory ? 'Unknown' : '0'} (Private Inventory)\n**Trade Ads:** ${tradeAds}\n[Rolimons Profile](${rolimonsUrl})`,
-            color: 0xff9900,
-            thumbnail: { url: avatarUrl }
-          }
-        ]
-      });
-      console.log(`[Monitor] ✓ Sent private inventory webhook for ${discordTag} (${isPrivateInventory ? 'Unknown value' : 'Value 0 with trade ads'})`);
-    } catch (error) {
-      console.error('Error sending private inventory webhook:', error.message);
-    }
-    return;
-  }
+// Separate function for processing - allows parallel execution
+async function processUser(discordId, robloxUserId, messageData) {
+  const { value, tradeAds, avatarUrl, rolimonsUrl } = await scrapeRolimons(robloxUserId);
+  console.log(`[Monitor] Scraped value: ${value.toLocaleString()}, tradeAds: ${tradeAds}`);
 
   // Check if trade ads is over 1,000 - if so, skip this user
   if (tradeAds >= 1000) {
     console.log(`[Monitor] User has too many trade ads (${tradeAds} >= 1000), skipping...`);
+    processedUsers.add(discordId);
+    pendingRoblox.delete(discordId);
     return;
   }
 
-  // Check if value meets threshold (100k) - only send if value is a number >= 100k
-  if (typeof value === 'number' && value >= VALUE_THRESHOLD) {
+  // UPDATED: 100k value threshold
+  if (value >= VALUE_THRESHOLD) {
+    if (webhookSent.has(discordId)) {
+      console.log(`[Monitor] Webhook already sent for ${messageData.discordTag}, skipping...`);
+      processedUsers.add(discordId);
+      pendingRoblox.delete(discordId);
+      return;
+    }
+
     try {
-      // Build embeds - include message data if available
-      const embeds = [];
-      
-      if (messageData) {
-        // Create jump to message link
-        const jumpToMessageUrl = `https://discord.com/channels/${messageData.guildId}/${messageData.channelId}/${messageData.messageId}`;
-        
-        embeds.push({
-          title: 'User Message',
-          description: `**Message:** ${messageData.content}\n**Discord:** ${discordUsername}\n**Channel:** #${messageData.channelName}\n[Jump to Message](${jumpToMessageUrl})`,
-          color: 0x00ff00
-        });
-      } else {
-        // No message data available
-        embeds.push({
-          title: 'User Detected',
-          description: `**Discord:** ${discordUsername}\n**Roblox User ID:** ${robloxUserId}\n[Rolimons Profile](${rolimonsUrl})`,
-          color: 0x00ff00
-        });
-      }
-      
-      embeds.push({
-        title: 'Rolimons Info',
-        description: `**Value:** ${value.toLocaleString()}\n**Trade Ads:** ${tradeAds}\n[Rolimons Profile](${rolimonsUrl})`,
-        color: 0x00ff00,
-        thumbnail: { url: avatarUrl }
-      });
+      // Create jump to message link
+      const jumpToMessageUrl = `https://discord.com/channels/${messageData.guildId}/${messageData.channelId}/${messageData.messageId}`;
       
       await axios.post(WEBHOOK_URL, {
         content: '@everyone',
-        embeds: embeds
+        embeds: [
+          {
+            title: 'User Message',
+            description: `**Message:** ${messageData.content}\n**Discord:** ${messageData.discordTag}\n**Channel:** #${messageData.channelName}\n[Jump to Message](${jumpToMessageUrl})`,
+            color: 0x00ff00
+          },
+          {
+            title: 'Rolimons Info',
+            description: `**Value:** ${value.toLocaleString()}\n**Trade Ads:** ${tradeAds}\n[Rolimons Profile](${rolimonsUrl})`,
+            color: 0x00ff00,
+            thumbnail: { url: avatarUrl }
+          }
+        ]
       });
-      console.log(`[Monitor] ✓ Sent webhook for ${discordTag} with value ${value.toLocaleString()}!`);
+
+      processedUsers.add(discordId);
+      webhookSent.add(discordId);
+      pendingRoblox.delete(discordId);
+      console.log(`[Monitor] Sent webhook for ${messageData.discordTag} with value ${value.toLocaleString()} from #${messageData.channelName}!`);
     } catch (error) {
       console.error('Error sending webhook:', error.message);
     }
   } else {
-    console.log(`[Monitor] User did not meet value requirement (${typeof value === 'number' ? value.toLocaleString() : value} < ${VALUE_THRESHOLD.toLocaleString()}).`);
+    console.log(`[Monitor] User did not meet value requirement (${value.toLocaleString()} < ${VALUE_THRESHOLD.toLocaleString()}).`);
+    processedUsers.add(discordId);
+    pendingRoblox.delete(discordId);
   }
 }
 
