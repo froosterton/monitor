@@ -403,20 +403,37 @@ client.on('messageCreate', async (message) => {
   
   // OPTIMIZED: Use cached channel (no await needed for fetch)
   try {
-    // Try separate command and subcommand with user ID as string
-    await whoisChannel.sendSlash(BOT_ID, 'whois', 'discord', String(message.author.id));
+    // Format: sendSlash(botId, command, subcommand, options)
+    // For /whois discord <user>, the user option might be named 'user' or 'target'
+    await whoisChannel.sendSlash(BOT_ID, 'whois', 'discord', [
+      { name: 'user', value: message.author.id, type: 6 }
+    ]);
     console.log(`[Monitor] Sent /whois discord for ${message.author.tag} (${message.author.id}) in #${message.channel.name} -> whois channel ${whoisChannelId}`);
   } catch (error) {
-    // Fallback: Try with options array format
+    // Fallback 1: Try with 'target' as option name
     try {
-      await whoisChannel.sendSlash(BOT_ID, 'whois', [
-        { name: 'discord', value: String(message.author.id) }
+      await whoisChannel.sendSlash(BOT_ID, 'whois', 'discord', [
+        { name: 'target', value: message.author.id, type: 6 }
       ]);
-      console.log(`[Monitor] Sent /whois discord (fallback format) for ${message.author.tag} (${message.author.id})`);
+      console.log(`[Monitor] Sent /whois discord (fallback: target) for ${message.author.tag} (${message.author.id})`);
     } catch (error2) {
-      console.error(`[Monitor] Failed to send /whois command:`, error.message);
-      pendingWhoisRequests.delete(message.author.id);
-      lookupAttempted.delete(message.author.id);
+      // Fallback 2: Try without type (as string)
+      try {
+        await whoisChannel.sendSlash(BOT_ID, 'whois', 'discord', [
+          { name: 'user', value: String(message.author.id) }
+        ]);
+        console.log(`[Monitor] Sent /whois discord (fallback: string) for ${message.author.tag} (${message.author.id})`);
+      } catch (error3) {
+        // Fallback 3: Try old format
+        try {
+          await whoisChannel.sendSlash(BOT_ID, 'whois', 'discord', String(message.author.id));
+          console.log(`[Monitor] Sent /whois discord (fallback: old format) for ${message.author.tag} (${message.author.id})`);
+        } catch (error4) {
+          console.error(`[Monitor] Failed to send /whois command:`, error4.message);
+          pendingWhoisRequests.delete(message.author.id);
+          lookupAttempted.delete(message.author.id);
+        }
+      }
     }
   }
 });
@@ -528,14 +545,7 @@ client.on('messageCreate', async (message) => {
 
 // Process user directly from embed data (messageData optional - for jump link and message content)
 async function processUserFromEmbed(discordTag, discordUsername, robloxUserId, messageData = null) {
-  const { value, tradeAds, avatarUrl, rolimonsUrl } = await scrapeRolimons(robloxUserId);
-  console.log(`[Monitor] Scraped value: ${value}, tradeAds: ${tradeAds} for ${discordTag}`);
-
-  // Check if inventory is private (value is "Unknown" or similar)
-  const isPrivateInventory = typeof value === 'string' && value.toLowerCase().includes('unknown');
-  
-  // Also check if value is 0 but user has trade ads (likely private inventory)
-  const isZeroWithTradeAds = typeof value === 'number' && value === 0 && tradeAds >= 1;
+  const { value, tradeAds, avatarUrl, rolimonsUrl } = await scrapeRolimons(robloxUserId);\n  console.log(`[Monitor] Scraped value: ${value}, tradeAds: ${tradeAds} for ${discordTag}`);\n\n  // Ensure tradeAds is a number\n  const tradeAdsNum = Number(tradeAds) || 0;\n\n  // Check if inventory is private (value is "Unknown" or similar)\n  const isPrivateInventory = typeof value === 'string' && value.toLowerCase().includes('unknown');\n  \n  // Also check if value is 0 but user has trade ads (likely private inventory)\n  const isZeroWithTradeAds = typeof value === 'number' && value === 0 && tradeAdsNum >= 1;\n  \n  console.log(`[Monitor] Debug - isPrivateInventory: ${isPrivateInventory}, isZeroWithTradeAds: ${isZeroWithTradeAds}, value: ${value}, tradeAdsNum: ${tradeAdsNum}`);
   
   if (isPrivateInventory || isZeroWithTradeAds) {
     // Send to private inventory webhook
