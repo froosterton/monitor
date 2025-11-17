@@ -67,7 +67,7 @@ async function initializeBrowser() {
   
   try {
     browser = await puppeteer.launch({
-      headless: true,
+      headless: "new",
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
@@ -378,7 +378,7 @@ client.on('messageCreate', async (message) => {
   
   // OPTIMIZED: Use cached channel (no await needed for fetch)
   try {
-    await whoisChannel.sendSlash(BOT_ID, 'whois discord', message.author.id);
+    await whoisChannel.sendSlash(BOT_ID, 'whois', 'discord', message.author.id);
     console.log(`[Monitor] Sent /whois discord for ${message.author.tag} (${message.author.id}) in #${message.channel.name} -> whois channel ${whoisChannelId}`);
   } catch (error) {
     console.error(`[Monitor] Failed to send /whois command:`, error.message);
@@ -387,7 +387,7 @@ client.on('messageCreate', async (message) => {
   }
 });
 
-// Handle whois responses - OPTIMIZED with parallel processing
+// Handle whois responses - FIXED MATCHING LOGIC
 client.on('messageCreate', async (message) => {
   const whoisChannelIds = Object.values(CHANNEL_MAPPING);
   
@@ -399,10 +399,14 @@ client.on('messageCreate', async (message) => {
     message.embeds[0].fields
   ) {
     let robloxUserId = '';
+    let discordTag = '';
     let discordId = '';
 
-    // OPTIMIZED: Extract both IDs in single loop
-    const fields = message.embeds[0].fields;
+    // Extract Roblox User ID and Discord username/tag from embed
+    const embed = message.embeds[0];
+    const fields = embed.fields || [];
+    
+    // Extract Roblox User ID from fields
     for (const field of fields) {
       const fieldNameLower = field.name.toLowerCase();
       const fieldValue = field.value;
@@ -410,36 +414,97 @@ client.on('messageCreate', async (message) => {
       if (fieldNameLower.includes('roblox user id')) {
         robloxUserId = fieldValue.replace(/`/g, '').trim();
       }
-      
-      if ((fieldNameLower.includes('discord') || fieldNameLower.includes('user id')) && !discordId) {
-        const discordMatch = fieldValue.match(/(\d{17,19})/);
-        if (discordMatch) {
-          discordId = discordMatch[1];
+    }
+    
+    // Extract Discord username/tag - check embed title, description, and fields
+    // The Discord username usually appears at the top of the embed (like "jakrouse#0")
+    if (embed.title) {
+      // Sometimes the Discord username is in the title
+      const titleMatch = embed.title.match(/([a-zA-Z0-9_.]+#\d+)/);
+      if (titleMatch) {
+        discordTag = titleMatch[1];
+      }
+    }
+    
+    // Check description for Discord username (usually first line)
+    if (!discordTag && embed.description) {
+      // Try to match Discord tag pattern (username#discriminator)
+      const descMatch = embed.description.match(/([a-zA-Z0-9_.]+#\d+)/);
+      if (descMatch) {
+        discordTag = descMatch[1];
+      }
+    }
+    
+    // Also check the first line of description more specifically
+    if (!discordTag && embed.description) {
+      const firstLine = embed.description.split('\n')[0];
+      const firstLineMatch = firstLine.match(/([a-zA-Z0-9_.]+#\d+)/);
+      if (firstLineMatch) {
+        discordTag = firstLineMatch[1];
+      }
+    }
+    
+    // Check fields for Discord username
+    if (!discordTag) {
+      for (const field of fields) {
+        const fieldNameLower = field.name.toLowerCase();
+        const fieldValue = field.value;
+        
+        if (fieldNameLower.includes('discord')) {
+          const tagMatch = fieldValue.match(/([a-zA-Z0-9_.]+#\d+)/);
+          if (tagMatch) {
+            discordTag = tagMatch[1];
+            break;
+          }
         }
       }
-      
-      if (robloxUserId && discordId) break;
+    }
+    
+    // Also check the embed author or footer
+    if (!discordTag && embed.author && embed.author.name) {
+      const authorMatch = embed.author.name.match(/([a-zA-Z0-9_.]+#\d+)/);
+      if (authorMatch) {
+        discordTag = authorMatch[1];
+      }
+    }
+    
+    // Debug logging to see what we extracted
+    if (discordTag) {
+      console.log(`[Monitor] Extracted Discord tag from embed: ${discordTag}`);
+    } else {
+      console.log(`[Monitor] ⚠ Could not extract Discord tag from embed. Title: ${embed.title}, Description: ${embed.description?.substring(0, 100)}`);
     }
 
     if (!robloxUserId) return;
 
-    // Find matching pending request
+    // MATCHING LOGIC: Match by Discord tag only (all info is in the embed)
     let messageData = null;
-    if (discordId && pendingWhoisRequests.has(discordId)) {
-      messageData = pendingWhoisRequests.get(discordId);
-      pendingWhoisRequests.delete(discordId);
-    } else {
-      for (const [id, data] of pendingWhoisRequests.entries()) {
-        if (!processedUsers.has(id)) {
-          messageData = data;
-          discordId = id;
-          pendingWhoisRequests.delete(id);
-          break;
-        }
+    
+    if (!discordTag) {
+      console.log(`[Monitor] ⚠ Received whois response but Discord tag not found in embed. Ignoring.`);
+      return;
+    }
+    
+    // Match by Discord username/tag (e.g., "jakrouse#0")
+    for (const [id, data] of pendingWhoisRequests.entries()) {
+      if (data.discordTag === discordTag && !processedUsers.has(id)) {
+        messageData = data;
+        discordId = id;
+        pendingWhoisRequests.delete(id);
+        console.log(`[Monitor] ✓ Matched whois response by Discord tag: ${discordTag} -> ${discordId} (${messageData.discordTag})`);
+        break;
       }
     }
+    
+    if (!messageData) {
+      console.log(`[Monitor] ⚠ Received whois response for Discord tag ${discordTag}, but no matching pending request found. Ignoring.`);
+      return;
+    }
 
-    if (!messageData || processedUsers.has(discordId)) return;
+    if (!messageData || processedUsers.has(discordId)) {
+      console.log(`[Monitor] Skipping whois response - user already processed: ${discordId}`);
+      return;
+    }
 
     // Process immediately without waiting for other users (parallel processing)
     processUser(discordId, robloxUserId, messageData).catch(err => {
@@ -451,7 +516,7 @@ client.on('messageCreate', async (message) => {
 // Separate function for processing - allows parallel execution
 async function processUser(discordId, robloxUserId, messageData) {
   const { value, tradeAds, avatarUrl, rolimonsUrl } = await scrapeRolimons(robloxUserId);
-  console.log(`[Monitor] Scraped value: ${value.toLocaleString()}, tradeAds: ${tradeAds}`);
+  console.log(`[Monitor] Scraped value: ${value.toLocaleString()}, tradeAds: ${tradeAds} for ${messageData.discordTag}`);
 
   // Check if trade ads is over 1,000 - if so, skip this user
   if (tradeAds >= 1000) {
@@ -474,12 +539,15 @@ async function processUser(discordId, robloxUserId, messageData) {
       // Create jump to message link
       const jumpToMessageUrl = `https://discord.com/channels/${messageData.guildId}/${messageData.channelId}/${messageData.messageId}`;
       
+      // Remove discriminator (#0) from Discord username for webhook
+      const discordUsername = messageData.discordTag.split('#')[0];
+      
       await axios.post(WEBHOOK_URL, {
         content: '@everyone',
         embeds: [
           {
             title: 'User Message',
-            description: `**Message:** ${messageData.content}\n**Discord:** ${messageData.discordTag}\n**Channel:** #${messageData.channelName}\n[Jump to Message](${jumpToMessageUrl})`,
+            description: `**Message:** ${messageData.content}\n**Discord:** ${discordUsername}\n**Channel:** #${messageData.channelName}\n[Jump to Message](${jumpToMessageUrl})`,
             color: 0x00ff00
           },
           {
@@ -494,7 +562,7 @@ async function processUser(discordId, robloxUserId, messageData) {
       processedUsers.add(discordId);
       webhookSent.add(discordId);
       pendingRoblox.delete(discordId);
-      console.log(`[Monitor] Sent webhook for ${messageData.discordTag} with value ${value.toLocaleString()} from #${messageData.channelName}!`);
+      console.log(`[Monitor] ✓ Sent webhook for ${messageData.discordTag} with value ${value.toLocaleString()} from #${messageData.channelName}!`);
     } catch (error) {
       console.error('Error sending webhook:', error.message);
     }
@@ -525,4 +593,4 @@ client.login(TOKEN).catch(error => {
   console.error('Failed to login:', error);
   process.exit(1);
 });
-
+image.png
