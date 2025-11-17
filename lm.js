@@ -493,7 +493,11 @@ client.on('messageCreate', async (message) => {
     }
     
     // Match by Discord username/tag (e.g., "jakrouse#0")
+    console.log(`[Monitor] Attempting to match Discord tag: ${discordTag}`);
+    console.log(`[Monitor] Pending requests (${pendingWhoisRequests.size}):`, Array.from(pendingWhoisRequests.entries()).map(([id, data]) => `${data.discordTag} (${id})`).join(', '));
+    
     for (const [id, data] of pendingWhoisRequests.entries()) {
+      console.log(`[Monitor] Comparing: "${discordTag}" === "${data.discordTag}" ? ${discordTag === data.discordTag}`);
       if (data.discordTag === discordTag && !processedUsers.has(id)) {
         messageData = data;
         discordId = id;
