@@ -378,12 +378,19 @@ client.on('messageCreate', async (message) => {
   
   // OPTIMIZED: Use cached channel (no await needed for fetch)
   try {
-    await whoisChannel.sendSlash(BOT_ID, 'whois', 'discord', message.author.id);
+    // Try full command string format first
+    await whoisChannel.sendSlash(BOT_ID, 'whois discord', message.author.id);
     console.log(`[Monitor] Sent /whois discord for ${message.author.tag} (${message.author.id}) in #${message.channel.name} -> whois channel ${whoisChannelId}`);
   } catch (error) {
-    console.error(`[Monitor] Failed to send /whois command:`, error.message);
-    pendingWhoisRequests.delete(message.author.id);
-    lookupAttempted.delete(message.author.id);
+    // Fallback: Try with subcommand and options array
+    try {
+      await whoisChannel.sendSlash(BOT_ID, 'whois', 'discord', [{ name: 'user', value: message.author.id }]);
+      console.log(`[Monitor] Sent /whois discord (fallback format) for ${message.author.tag} (${message.author.id})`);
+    } catch (error2) {
+      console.error(`[Monitor] Failed to send /whois command:`, error.message);
+      pendingWhoisRequests.delete(message.author.id);
+      lookupAttempted.delete(message.author.id);
+    }
   }
 });
 
