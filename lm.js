@@ -1,8 +1,5 @@
 const { Client } = require('discord.js-selfbot-v13');
 const axios = require('axios');
-const { Builder, By } = require('selenium-webdriver');
-const chrome = require('selenium-webdriver/chrome');
-
 // Use environment variable for token (more secure)
 const TOKEN = process.env.DISCORD_TOKEN
 const MONITOR_CHANNEL_IDS = [
@@ -51,88 +48,56 @@ async function fetchBlockedUsers() {
   }
 }
 
-let driver;
+async function fetchUserRAP(robloxUserId) {
+  let rap = 0;
+  let cursor;
 
-async function initializeWebDriver() {
   try {
-    console.log('🔧 Initializing Selenium WebDriver...');
-    const options = new chrome.Options();
-    
-    // Cloud-optimized Chrome options
-    options.addArguments(
-        '--headless',
-        '--no-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-gpu',
-        '--disable-web-security',
-        '--disable-features=VizDisplayCompositor',
-        '--disable-extensions',
-        '--disable-plugins',
-        '--memory-pressure-off',
-        '--max_old_space_size=4096'
-    );
-    
-    // Set Chrome binary path for cloud environments
-    if (process.env.NODE_ENV === 'production') {
-        options.setChromeBinaryPath('/usr/bin/chromium');
+    while (true) {
+      const { data } = await axios.get(
+        `https://inventory.roblox.com/v1/users/${robloxUserId}/assets/collectibles`,
+        { params: { limit: 100, sortOrder: 'Asc', cursor } }
+      );
+
+      const collectibles = Array.isArray(data?.data) ? data.data : [];
+      if (collectibles.length === 0) break;
+
+      for (const collectible of collectibles) {
+        rap += Number(collectible.recentAveragePrice || 0);
+      }
+
+      if (data?.nextPageCursor) {
+        cursor = data.nextPageCursor;
+      } else {
+        break;
+      }
     }
-    
-    driver = await new Builder()
-        .forBrowser('chrome')
-        .setChromeOptions(options)
-        .build();
-        
-    console.log('✅ Selenium WebDriver initialized successfully');
   } catch (error) {
-    console.error('❌ WebDriver initialization error:', error.message);
+    console.error(`[Monitor] Failed to fetch RAP for ${robloxUserId}:`, error.message);
+  }
+
+  return rap;
+}
+
+async function fetchAvatarUrl(robloxUserId) {
+  try {
+    const { data } = await axios.get('https://thumbnails.roblox.com/v1/users/avatar-headshot', {
+      params: { userIds: robloxUserId, size: '150x150', format: 'Png', isCircular: false }
+    });
+
+    return data?.data?.[0]?.imageUrl || '';
+  } catch (error) {
+    console.error(`[Monitor] Failed to fetch avatar for ${robloxUserId}:`, error.message);
+    return '';
   }
 }
 
-async function scrapeRolimons(robloxUserId) {
-  if (!driver) {
-    console.error('WebDriver not initialized');
-    return { value: 0, tradeAds: 0, avatarUrl: '', rolimonsUrl: `https://www.rolimons.com/player/${robloxUserId}` };
-  }
+function robloxProfileUrl(robloxUserId) {
+  return `https://www.roblox.com/users/${robloxUserId}/profile`;
+}
 
-  const url = `https://www.rolimons.com/player/${robloxUserId}`;
-  try {
-    await driver.get(url);
-    await driver.sleep(3000);
-
-    let value = 0, tradeAds = 0, avatarUrl = '';
-    
-    try {
-      const valueElem = await driver.findElement(By.id('player_value'));
-      value = parseInt((await valueElem.getText()).replace(/,/g, '')) || 0;
-    } catch {}
-    
-    try {
-      // Look specifically for the Trade Ads Created container
-      const tradeAdsContainer = await driver.findElement(By.css('.trade-ads-created-container'));
-      const tradeAdsElem = await tradeAdsContainer.findElement(By.css('span.card-title.mb-1.text-light.stat-data.text-nowrap'));
-      tradeAds = parseInt((await tradeAdsElem.getText()).replace(/,/g, '')) || 0;
-    } catch {
-      // Fallback: try to find by the header text "Trade Ads Created"
-      try {
-        const headers = await driver.findElements(By.xpath('//h6[contains(text(), "Trade Ads Created")]'));
-        if (headers.length > 0) {
-          const parent = await headers[0].findElement(By.xpath('..'));
-          const tradeAdsElem = await parent.findElement(By.css('span.card-title.mb-1.text-light.stat-data.text-nowrap'));
-          tradeAds = parseInt((await tradeAdsElem.getText()).replace(/,/g, '')) || 0;
-        }
-      } catch {}
-    }
-    
-    try {
-      const avatarElem = await driver.findElement(By.css('img.mx-auto.d-block.w-100.h-100'));
-      avatarUrl = await avatarElem.getAttribute('src');
-    } catch {}
-    
-    return { value, tradeAds, avatarUrl, rolimonsUrl: url };
-  } catch (error) {
-    console.error('Error scraping Rolimons:', error.message);
-    return { value: 0, tradeAds: 0, avatarUrl: '', rolimonsUrl: url };
-  }
+function rolimonsProfileUrl(robloxUserId) {
+  return `https://www.rolimons.com/player/${robloxUserId}`;
 }
 
 const client = new Client({ checkUpdate: false });
@@ -145,7 +110,6 @@ let lookupAttempted = new Set(); // Users we've already tried to look up (preven
 client.on('ready', async () => {
   console.log(`[Monitor] Logged in as ${client.user.tag}`);
   await fetchBlockedUsers();
-  await initializeWebDriver();
   console.log(`[Monitor] Bot ready and monitoring ${MONITOR_CHANNEL_IDS.length} channels!`);
   console.log(`[Monitor] Channels: ${MONITOR_CHANNEL_IDS.join(', ')}`);
   console.log(`[Monitor] Channel mapping:`, CHANNEL_MAPPING);
@@ -235,68 +199,63 @@ client.on('messageCreate', async (message) => {
         break;
       }
     }
-    if (!robloxUserId) return;
+      if (!robloxUserId) return;
 
-    // Find the pending request that matches this Roblox user ID
-    // We'll need to scrape Rolimons to get the Discord ID, so we check all pending
-    for (const [discordId, msg] of pendingRoblox.entries()) {
-      if (processedUsers.has(discordId)) continue;
-      
-      // Scrape Rolimons and check value
-      const { value, tradeAds, avatarUrl, rolimonsUrl } = await scrapeRolimons(robloxUserId);
-      console.log(`[Monitor] Scraped value: ${value}, tradeAds: ${tradeAds}`);
-      
-      // Check if trade ads is over 1,000 - if so, skip this user
-      if (tradeAds >= 1000) {
-        console.log(`[Monitor] User has too many trade ads (${tradeAds} >= 1000), skipping...`);
-        processedUsers.add(discordId);
-        pendingRoblox.delete(discordId);
-        continue;
-      }
-      
-      if (value >= 50000) {
-        // Check if we've already sent a webhook for this user
-        if (webhookSent.has(discordId)) {
-          console.log(`[Monitor] Webhook already sent for ${msg.discordTag}, skipping...`);
-          processedUsers.add(discordId);
-          pendingRoblox.delete(discordId);
-          continue;
-        }
+      // Find the pending request that matches this Roblox user ID
+      // We check all pending entries because we key by Discord ID
+      for (const [discordId, msg] of pendingRoblox.entries()) {
+        if (processedUsers.has(discordId)) continue;
+
+        // Fetch RAP and avatar using Roblox APIs
+        const rap = await fetchUserRAP(robloxUserId);
+        const avatarUrl = await fetchAvatarUrl(robloxUserId);
+        const robloxUrl = robloxProfileUrl(robloxUserId);
+        const rolimonsUrl = rolimonsProfileUrl(robloxUserId);
+        console.log(`[Monitor] Computed RAP: ${rap}`);
         
-        try {
-          await axios.post(WEBHOOK_URL, {
-            content: '@everyone',
-            embeds: [
-              {
-                title: 'User Message',
-                description: `**Message:** ${msg.content}\n**Discord:** ${msg.discordTag}\n**Channel:** #${msg.channelName}\n\n[Jump To Message](${msg.messageUrl})`,  // Added: Jump To Message link
-                color: 0x00ff00
-              },
-              {
-                title: 'Rolimons Info',
-                description: `**Value:** ${value.toLocaleString()}\n**Trade Ads:** ${tradeAds}\n[Rolimons Profile](${rolimonsUrl})`,
-                color: 0x00ff00,
-                thumbnail: { url: avatarUrl }
-              }
-            ]
-          });
+        if (rap >= 50000) {
+          // Check if we've already sent a webhook for this user
+          if (webhookSent.has(discordId)) {
+            console.log(`[Monitor] Webhook already sent for ${msg.discordTag}, skipping...`);
+            processedUsers.add(discordId);
+            pendingRoblox.delete(discordId);
+            continue;
+          }
           
-          // Mark this user as processed and webhook sent
+          try {
+            await axios.post(WEBHOOK_URL, {
+              content: '@everyone',
+              embeds: [
+                {
+                  title: 'User Message',
+                  description: `**Message:** ${msg.content}\n**Discord:** ${msg.discordTag}\n**Channel:** #${msg.channelName}\n\n[Jump To Message](${msg.messageUrl})`,  // Added: Jump To Message link
+                  color: 0x00ff00
+                },
+                {
+                  title: 'Roblox Info',
+                  description: `**RAP:** ${rap.toLocaleString()}\n[Roblox Profile](${robloxUrl}) • [Rolimons Profile](${rolimonsUrl})`,
+                  color: 0x00ff00,
+                  thumbnail: { url: avatarUrl }
+                }
+              ]
+            });
+            
+            // Mark this user as processed and webhook sent
+            processedUsers.add(discordId);
+            webhookSent.add(discordId);
+            pendingRoblox.delete(discordId);
+            console.log(`[Monitor] Sent webhook for ${msg.discordTag} with RAP ${rap} from #${msg.channelName}!`);
+            break; // Only process the first match
+          } catch (error) {
+            console.error('Error sending webhook:', error.message);
+            // Don't mark as processed if webhook failed
+          }
+        } else {
+          console.log(`[Monitor] User did not meet RAP requirement (${rap} < 50000).`);
           processedUsers.add(discordId);
-          webhookSent.add(discordId);
           pendingRoblox.delete(discordId);
-          console.log(`[Monitor] Sent webhook for ${msg.discordTag} with value ${value} from #${msg.channelName}!`);
-          break; // Only process the first match
-        } catch (error) {
-          console.error('Error sending webhook:', error.message);
-          // Don't mark as processed if webhook failed
         }
-      } else {
-        console.log(`[Monitor] User did not meet value requirement (${value} < 50000).`);
-        processedUsers.add(discordId);
-        pendingRoblox.delete(discordId);
       }
-    }
   }
 });
 
@@ -309,11 +268,8 @@ process.on('unhandledRejection', (error) => {
   console.error('Unhandled promise rejection:', error);
 });
 
-process.on('SIGINT', async () => {
+process.on('SIGINT', () => {
   console.log('Shutting down...');
-  if (driver) {
-    await driver.quit();
-  }
   process.exit(0);
 });
 
