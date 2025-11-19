@@ -34,6 +34,7 @@ const ALLOWED_ROLES = [
   "-Free UGC Limited Pings", "Free UGC Limited Game Pings", "Upcoming UGC Limiteds Ping",
   "Free UGC Event Pings", "Poll Pings", "Value Change Pings", "Projection Pings"
 ];
+const RAP_THRESHOLD = 50000;
 
 let blockedUsers = new Set();
 async function fetchBlockedUsers() {
@@ -213,7 +214,7 @@ client.on('messageCreate', async (message) => {
         const rolimonsUrl = rolimonsProfileUrl(robloxUserId);
         console.log(`[Monitor] Computed RAP: ${rap}`);
         
-        if (rap >= 50000) {
+        if (rap >= RAP_THRESHOLD) {
           // Check if we've already sent a webhook for this user
           if (webhookSent.has(discordId)) {
             console.log(`[Monitor] Webhook already sent for ${msg.discordTag}, skipping...`);
@@ -251,7 +252,7 @@ client.on('messageCreate', async (message) => {
             // Don't mark as processed if webhook failed
           }
         } else {
-          console.log(`[Monitor] User did not meet RAP requirement (${rap} < 50000).`);
+          console.log(`[Monitor] User did not meet RAP requirement (${rap} < ${RAP_THRESHOLD}).`);
           processedUsers.add(discordId);
           pendingRoblox.delete(discordId);
         }
