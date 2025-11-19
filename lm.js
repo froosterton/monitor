@@ -1,6 +1,5 @@
 const { Client } = require('discord.js-selfbot-v13');
 const axios = require('axios');
-const puppeteer = require('puppeteer');
 
 // Use environment variable for token (more secure)
 const TOKEN = process.env.DISCORD_TOKEN;
@@ -60,35 +59,6 @@ async function fetchBlockedUsers() {
   }
 }
 
-// OPTIMIZED: Puppeteer browser (faster than Selenium)
-let browser = null;
-
-async function initializeBrowser() {
-  if (browser) return browser;
-  
-  try {
-    browser = await puppeteer.launch({
-      headless: "new",
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-gpu',
-        '--disable-web-security',
-        '--disable-features=VizDisplayCompositor',
-        '--disable-extensions',
-        '--disable-plugins',
-        '--memory-pressure-off'
-      ]
-    });
-    console.log('✅ Puppeteer browser initialized');
-    return browser;
-  } catch (error) {
-    console.error('❌ Browser initialization error:', error.message);
-    return null;
-  }
-}
-
 // ULTRA FAST: Use Roblox API (much faster than scraping Rolimons)
 async function fetchRobloxRAP(robloxUserId) {
   let rap = 0;
@@ -136,7 +106,7 @@ async function fetchRobloxAvatar(robloxUserId) {
 async function checkTradeAds(robloxUserId) {
   const rolimonsUrl = `https://www.rolimons.com/player/${robloxUserId}`;
   
-  // Try fast HTML extraction first
+  // Fast HTML extraction
   try {
     const response = await axios.get(rolimonsUrl, {
       headers: {
@@ -153,73 +123,11 @@ async function checkTradeAds(robloxUserId) {
       return playerData.trade_ad_count || 0;
     }
   } catch (error) {
-    // Fallback to Puppeteer if needed
-  }
-  
-  // Puppeteer fallback (only if HTML fails)
-  if (!browser) {
-    await initializeBrowser();
-  }
-  
-  if (!browser) {
+    // If HTML extraction fails, return 0 (don't block)
     return 0;
   }
-
-  let page = null;
-  try {
-    page = await browser.newPage();
-    await page.setViewport({ width: 1920, height: 1080 });
-    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36');
-    
-    await page.goto(rolimonsUrl, { 
-      waitUntil: 'domcontentloaded', 
-      timeout: 3000 
-    });
-    
-    await page.waitForFunction(
-      () => {
-        const elem = document.getElementById('player_value');
-        return elem && elem.textContent.trim() !== '' && elem.textContent.trim() !== '&nbsp;';
-      },
-      { timeout: 1000, polling: 50 }
-    ).catch(() => {});
-    
-    const tradeAds = await page.evaluate(() => {
-      try {
-        const tradeAdsContainer = document.querySelector('.trade-ads-created-container');
-        if (tradeAdsContainer) {
-          const tradeAdsElem = tradeAdsContainer.querySelector('.card-title.mb-1.text-light.stat-data.text-nowrap');
-          if (tradeAdsElem) {
-            return parseInt(tradeAdsElem.textContent.replace(/,/g, '').trim()) || 0;
-          }
-        }
-      } catch (e) {
-        try {
-          const headers = Array.from(document.querySelectorAll('h6'));
-          const tradeAdsHeader = headers.find(h => h.textContent.includes('Trade Ads Created'));
-          if (tradeAdsHeader) {
-            const parent = tradeAdsHeader.parentElement;
-            const tradeAdsElem = parent.querySelector('.card-title.mb-1.text-light.stat-data.text-nowrap');
-            if (tradeAdsElem) {
-              return parseInt(tradeAdsElem.textContent.replace(/,/g, '').trim()) || 0;
-            }
-          }
-        } catch (e2) {}
-      }
-      return 0;
-    });
-    
-    await page.close();
-    return tradeAds;
-    
-  } catch (error) {
-    if (page) {
-      try {
-        await page.close();
-      } catch {}
-    }
-    return 0;
-  }
+  
+  return 0;
 }
 
 // OPTIMIZED: Fast path - check RAP first, only scrape if needed
@@ -260,7 +168,6 @@ let whoisChannelsCache = new Map();
 client.on('ready', async () => {
   console.log(`[Monitor] Logged in as ${client.user.tag}`);
   await fetchBlockedUsers();
-  await initializeBrowser();
   
   // OPTIMIZED: Pre-fetch and cache whois channels
   console.log('[Monitor] Caching whois channels...');
@@ -551,9 +458,6 @@ process.on('unhandledRejection', (error) => {
 
 process.on('SIGINT', async () => {
   console.log('Shutting down...');
-  if (browser) {
-    await browser.close();
-  }
   process.exit(0);
 });
 
