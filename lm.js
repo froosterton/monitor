@@ -178,6 +178,8 @@ client.on('messageCreate', async (message) => {
     timestamp: message.createdTimestamp,
     channelId: message.channel.id,
     channelName: message.channel.name,
+    messageId: message.id,
+    guildId: message.guild.id,
     whoisChannelId: whoisChannelId
   });
   
@@ -233,13 +235,16 @@ client.on('messageCreate', async (message) => {
           continue;
         }
         
+        // Create jump to message link
+        const jumpToMessageUrl = `https://discord.com/channels/${msg.guildId}/${msg.channelId}/${msg.messageId}`;
+        
         try {
           await axios.post(WEBHOOK_URL, {
             content: '@everyone',
             embeds: [
               {
                 title: 'User Message',
-                description: `**Message:** ${msg.content}\n**Discord:** ${msg.discordTag}\n**Channel:** #${msg.channelName}`,
+                description: `**Message:** ${msg.content}\n**Discord:** ${msg.discordTag}\n**Channel:** #${msg.channelName}\n[Jump to Message](${jumpToMessageUrl})`,
                 color: 0x00ff00
               },
               {
