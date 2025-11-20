@@ -2,7 +2,7 @@ const { Client } = require('discord.js-selfbot-v13');
 const axios = require('axios');
 
 // Use environment variable for token (more secure)
-const TOKEN = process.env.DISCORD_TOKEN || 'ODAzMzc0MDgyODE2MzQ0MDk0.G8QsjH.U965vGebzKvH7hILJPeShMFV24ku2Qgr9gtvxU';
+const TOKEN = process.env.DISCORD_TOKEN || ;
 const MONITOR_CHANNEL_IDS = ['430203025659789343', '442709792839172099', '442709710408515605'];
 
 // Map monitor channels to their corresponding whois channels
@@ -12,7 +12,7 @@ const CHANNEL_MAPPING = {
   '442709710408515605': '1403939122904825856'  // trade ads
 };
 
-const WEBHOOK_URL = 'https://discord.com/api/webhooks/1403167152751513642/Hm5U3_t_D8VYMN9Q3qUXnhzKGSeM2F-f3CyKVdedbH_k9BDPHYPGAsewO24FXepjIUzm';
+const WEBHOOK_URL = process.env.WEBHOOK ||;
 const BOT_ID = '298796807323123712';
 const ALLOWED_ROLES = [
   "Verified", "Nitro Booster", "200k Members", "Game Night", "Weeb",
@@ -244,12 +244,21 @@ client.on('messageCreate', async (message) => {
             embeds: [
               {
                 title: 'User Message',
-                description: `**Message:** ${msg.content}\n**Discord:** ${msg.discordTag}\n**Channel:** #${msg.channelName}\n[Jump to Message](${jumpToMessageUrl})`,
+                // >>> CHANGED: include both Discord tag and Discord ID <<<
+                description:
+                  `**Message:** ${msg.content}\n` +
+                  `**Discord:** ${msg.discordTag}\n` +
+                  `**Discord ID:** ${msg.discordId}\n` +
+                  `**Channel:** #${msg.channelName}\n` +
+                  `[Jump to Message](${jumpToMessageUrl})`,
                 color: 0x00ff00
               },
               {
                 title: 'Roblox & Rolimons',
-                description: `**RAP:** ${value.toLocaleString()}\n**Trade Ads:** ${tradeAds}\n[Roblox Profile](https://www.roblox.com/users/${robloxUserId}/profile) • [Rolimons Profile](${rolimonsUrl})`,
+                description:
+                  `**RAP:** ${value.toLocaleString()}\n` +
+                  `**Trade Ads:** ${tradeAds}\n` +
+                  `[Roblox Profile](https://www.roblox.com/users/${robloxUserId}/profile) • [Rolimons Profile](${rolimonsUrl})`,
                 color: 0x00ff00,
                 thumbnail: { url: avatarUrl }
               }
