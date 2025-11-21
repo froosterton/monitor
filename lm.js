@@ -1,5 +1,6 @@
 const { Client } = require('discord.js-selfbot-v13');
 const axios = require('axios');
+const fs = require('fs');
 
 // ---------------- CONFIG (no hardcoded secrets) ----------------
 
@@ -28,6 +29,7 @@ const CHANNEL_MAPPING = {
   '442709710408515605': '1403939122904825856'
 };
 
+// RoVer bot / application id
 const BOT_ID = '298796807323123712';
 
 // Allowed roles
@@ -42,11 +44,42 @@ const ALLOWED_ROLES = [
 // Value threshold
 const VALUE_THRESHOLD = 50000;
 
-// Globals
-let blockedUsers = new Set();
-let processedUsers = new Set();
-let pendingRoblox = new Map();
-let webhookSent = new Set();
+// ---------------- PERSISTENT CHECKED USERS (Railway Volume) ----------------
+
+// This path is inside the Railway Volume mounted at /data
+// Make sure the Volume mount path in Railway is /data
+const CHECKED_FILE = '/data/checked_users.json';
+
+let checkedUsers = new Set();   // survives restarts via file
+
+function loadCheckedUsers() {
+  try {
+    if (fs.existsSync(CHECKED_FILE)) {
+      const arr = JSON.parse(fs.readFileSync(CHECKED_FILE, 'utf8'));
+      if (Array.isArray(arr)) {
+        checkedUsers = new Set(arr);
+      }
+    }
+    console.log(`[Monitor] Loaded checked users: ${checkedUsers.size}`);
+  } catch (err) {
+    console.error('[Monitor] Failed to load checked users:', err.message);
+  }
+}
+
+function saveCheckedUsers() {
+  try {
+    fs.writeFileSync(CHECKED_FILE, JSON.stringify([...checkedUsers]), 'utf8');
+  } catch (err) {
+    console.error('[Monitor] Failed to save checked users:', err.message);
+  }
+}
+
+// ---------------- RUNTIME STATE (per process) ----------------
+
+let blockedUsers = new Set();    // from Discord relationships
+let processedUsers = new Set();  // processed in this run
+let pendingRoblox = new Map();   // discordId -> meta
+let webhookSent = new Set();     // to avoid duplicates in this run
 
 // ---------------- FETCH BLOCKED USERS ----------------
 
@@ -94,7 +127,9 @@ async function fetchRobloxRAP(userId) {
       if (data.nextPageCursor) cursor = data.nextPageCursor;
       else break;
     }
-  } catch {}
+  } catch {
+    // ignore RAP errors, treat as 0
+  }
 
   return rap;
 }
@@ -139,7 +174,9 @@ async function checkTradeAds(userId) {
       const info = JSON.parse(match[1]);
       return info.trade_ad_count || 0;
     }
-  } catch {}
+  } catch {
+    // ignore
+  }
 
   return 0;
 }
@@ -169,16 +206,70 @@ const client = new Client({ checkUpdate: false });
 
 client.on('ready', async () => {
   console.log(`[Monitor] Logged in as ${client.user.tag}`);
+  loadCheckedUsers();
   await fetchBlockedUsers();
   console.log(`[Monitor] Monitoring ${MONITOR_CHANNEL_IDS.length} channels`);
 });
 
-// Watch monitored channels
+// global safety so nothing kills the process silently
+process.on('unhandledRejection', (reason) => {
+  console.error('Unhandled Rejection:', reason);
+});
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught Exception:', err);
+});
+
+// helper: send /whois safely
+async function sendWhoisForMessage(message, whoisChannelId) {
+  const whoisChannel = await client.channels.fetch(whoisChannelId).catch(() => null);
+  if (!whoisChannel) return false;
+
+  try {
+    await whoisChannel.sendSlash(BOT_ID, "whois discord", message.author.id);
+    console.log(`[Monitor] /whois sent for ${message.author.tag}`);
+    return true;
+  } catch (err) {
+    const msg = String(err?.message || '');
+    console.error(`[Monitor] Failed to send /whois for ${message.author.tag}:`, msg);
+
+    if (
+      msg.includes('INTERACTION_TIMEOUT') ||
+      msg.includes('botId is not a bot') ||
+      msg.includes('application slash command')
+    ) {
+      console.error('[Monitor] RoVer / slash metadata issue. Skipping this user.');
+    }
+
+    return false;
+  }
+}
+
+// mark a user as fully checked (and persist)
+function markUserChecked(discordId) {
+  processedUsers.add(discordId);
+  checkedUsers.add(discordId);
+  pendingRoblox.delete(discordId);
+  saveCheckedUsers();
+}
+
+// ------------- MESSAGE HANDLER: WATCH MONITOR CHANNELS -------------
+
 client.on('messageCreate', async (message) => {
-  if (message.author.bot) return;
-  if (blockedUsers.has(message.author.id)) return;
-  if (!MONITOR_CHANNEL_IDS.includes(message.channel.id)) return;
-  if (processedUsers.has(message.author.id)) return;
+  // skip if:
+  // - bot
+  // - blocked
+  // - not in monitored channel
+  // - already processed in this run
+  // - already checked in any previous run (from file)
+  if (
+    message.author.bot ||
+    blockedUsers.has(message.author.id) ||
+    !MONITOR_CHANNEL_IDS.includes(message.channel.id) ||
+    processedUsers.has(message.author.id) ||
+    checkedUsers.has(message.author.id)
+  ) {
+    return;
+  }
 
   // Role filter
   let member = message.member;
@@ -197,11 +288,13 @@ client.on('messageCreate', async (message) => {
   const valid = roles.length > 0 && roles.every(r => ALLOWED_ROLES.includes(r));
   if (!valid) return;
 
-  // Map to whois channel
   const whoisChannelId = CHANNEL_MAPPING[message.channel.id];
   if (!whoisChannelId) return;
 
-  // Store pending request
+  // Only store pending if we actually sent the slash command
+  const ok = await sendWhoisForMessage(message, whoisChannelId);
+  if (!ok) return;
+
   pendingRoblox.set(message.author.id, {
     discordId: message.author.id,
     discordTag: message.author.tag,
@@ -212,16 +305,10 @@ client.on('messageCreate', async (message) => {
     guildId: message.guild.id,
     whoisChannelId
   });
-
-  const whoisChannel = await client.channels.fetch(whoisChannelId);
-  if (!whoisChannel) return;
-
-  whoisChannel.sendSlash(BOT_ID, "whois discord", message.author.id);
-
-  console.log(`[Monitor] /whois sent for ${message.author.tag}`);
 });
 
-// Listen for whois responses
+// ------------- MESSAGE HANDLER: LISTEN FOR ROVER WHOIS EMBEDS -------------
+
 client.on('messageCreate', async (message) => {
   const whoisChannels = Object.values(CHANNEL_MAPPING);
 
@@ -229,75 +316,81 @@ client.on('messageCreate', async (message) => {
     message.author.id !== BOT_ID ||
     !whoisChannels.includes(message.channel.id) ||
     !message.embeds?.length
-  ) return;
+  ) {
+    return;
+  }
+
+  const embed = message.embeds[0];
+  if (!embed.fields || !embed.fields.length) return;
 
   // Extract Roblox ID
   let robloxUserId = '';
-  for (const field of message.embeds[0].fields) {
-    if (field.name.toLowerCase().includes('roblox user id')) {
+  for (const field of embed.fields) {
+    if (field.name && field.name.toLowerCase().includes('roblox user id')) {
       robloxUserId = field.value.replace(/`/g, '').trim();
     }
   }
   if (!robloxUserId) return;
 
-  // Find matching pending
+  // For each pending discord user, process once
   for (const [discordId, data] of pendingRoblox.entries()) {
-    if (processedUsers.has(discordId)) continue;
+    if (processedUsers.has(discordId) || checkedUsers.has(discordId)) continue;
 
     const { value, tradeAds, avatarUrl, rolimonsUrl } =
       await scrapeRolimons(robloxUserId);
 
+    // Too many trade ads, mark as checked and skip
     if (tradeAds >= 1000) {
-      processedUsers.add(discordId);
-      pendingRoblox.delete(discordId);
+      markUserChecked(discordId);
       continue;
     }
 
     if (value >= VALUE_THRESHOLD) {
       if (webhookSent.has(discordId)) {
-        processedUsers.add(discordId);
-        pendingRoblox.delete(discordId);
+        markUserChecked(discordId);
         continue;
       }
 
       const jumpUrl = `https://discord.com/channels/${data.guildId}/${data.channelId}/${data.messageId}`;
 
-      // Send webhook
-      await axios.post(WEBHOOK_URL, {
-        content: '@everyone',
-        embeds: [
-          {
-            title: "User Message",
-            description:
-              `**Message:** ${data.content}\n` +
-              `**Discord:** ${data.discordTag}\n` +
-              `**Discord ID:** ${data.discordId}\n` +
-              `**Channel:** #${data.channelName}\n` +
-              `[Jump to Message](${jumpUrl})`,
-            color: 0x00ff00
-          },
-          {
-            title: "Roblox & Rolimons",
-            description:
-              `**RAP:** ${value.toLocaleString()}\n` +
-              `**Trade Ads:** ${tradeAds}\n` +
-              `[Roblox Profile](https://www.roblox.com/users/${robloxUserId}/profile) • [Rolimons Profile](${rolimonsUrl})`,
-            thumbnail: { url: avatarUrl },
-            color: 0x00ff00
-          }
-        ]
-      });
+      try {
+        await axios.post(WEBHOOK_URL, {
+          content: '@everyone',
+          embeds: [
+            {
+              title: "User Message",
+              description:
+                `**Message:** ${data.content}\n` +
+                `**Discord:** ${data.discordTag}\n` +
+                `**Discord ID:** ${data.discordId}\n` +
+                `**Channel:** #${data.channelName}\n` +
+                `[Jump to Message](${jumpUrl})`,
+              color: 0x00ff00
+            },
+            {
+              title: "Roblox & Rolimons",
+              description:
+                `**RAP:** ${value.toLocaleString()}\n` +
+                `**Trade Ads:** ${tradeAds}\n` +
+                `[Roblox Profile](https://www.roblox.com/users/${robloxUserId}/profile) • [Rolimons Profile](${rolimonsUrl})`,
+              thumbnail: { url: avatarUrl },
+              color: 0x00ff00
+            }
+          ]
+        });
 
-      webhookSent.add(discordId);
-      processedUsers.add(discordId);
-      pendingRoblox.delete(discordId);
+        webhookSent.add(discordId);
+        console.log(`[Monitor] Webhook sent for ${data.discordTag}`);
+      } catch (err) {
+        console.error('[Monitor] Failed to send webhook:', err.message);
+      }
 
-      console.log(`[Monitor] Webhook sent for ${data.discordTag}`);
+      markUserChecked(discordId);
       break;
     }
 
-    processedUsers.add(discordId);
-    pendingRoblox.delete(discordId);
+    // Low value, just mark as checked so we do not repeat later
+    markUserChecked(discordId);
   }
 });
 
