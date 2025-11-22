@@ -185,10 +185,7 @@ client.on('messageCreate', async (message) => {
   
   const whoisChannel = await client.channels.fetch(whoisChannelId);
   if (!whoisChannel) return;
-
-  // 🔧 FIXED: use normal message instead of sendSlash
-  await whoisChannel.send(`/whois discord ${message.author.id}`);
-
+  await whoisChannel.sendSlash(BOT_ID, 'whois discord', message.author.id);
   console.log(`[Monitor] Sent /whois discord for ${message.author.tag} (${message.author.id}) in #${message.channel.name} -> whois channel ${whoisChannelId}`);
 });
 
