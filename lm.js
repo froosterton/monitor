@@ -12,7 +12,7 @@ const CHANNEL_MAPPING = {
   '442709710408515605': '1403939122904825856'  // trade ads
 };
 
-const WEBHOOK = process.env.WEBHOOK_URL;
+const WEBHOOK_URL = process.env.WEBHOOK_URL;
 const BOT_ID = '298796807323123712';
 const ALLOWED_ROLES = [
   "Verified", "Nitro Booster", "200k Members", "Game Night", "Weeb",
