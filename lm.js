@@ -1,7 +1,7 @@
 // monitor.js
 const { Client } = require('discord.js-selfbot-v13');
 const axios = require('axios');
-require('dotenv').config();
+
 
 // ---------------- CONFIG (env only) ----------------
 
