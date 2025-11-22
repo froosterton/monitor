@@ -46,8 +46,7 @@ const VALUE_THRESHOLD = 50000;
 
 // ---------------- PERSISTENT CHECKED USERS (Railway Volume) ----------------
 
-// This path is inside the Railway Volume mounted at /data
-// Make sure the Volume mount path in Railway is /data
+// Make sure your Railway volume is mounted at /data
 const CHECKED_FILE = '/data/checked_users.json';
 
 let checkedUsers = new Set();   // survives restarts via file
@@ -255,12 +254,7 @@ function markUserChecked(discordId) {
 // ------------- MESSAGE HANDLER: WATCH MONITOR CHANNELS -------------
 
 client.on('messageCreate', async (message) => {
-  // skip if:
-  // - bot
-  // - blocked
-  // - not in monitored channel
-  // - already processed in this run
-  // - already checked in any previous run (from file)
+  // first branch: monitored channels
   if (
     message.author.bot ||
     blockedUsers.has(message.author.id) ||
@@ -291,7 +285,6 @@ client.on('messageCreate', async (message) => {
   const whoisChannelId = CHANNEL_MAPPING[message.channel.id];
   if (!whoisChannelId) return;
 
-  // Only store pending if we actually sent the slash command
   const ok = await sendWhoisForMessage(message, whoisChannelId);
   if (!ok) return;
 
@@ -312,6 +305,7 @@ client.on('messageCreate', async (message) => {
 client.on('messageCreate', async (message) => {
   const whoisChannels = Object.values(CHANNEL_MAPPING);
 
+  // Only process RoVer messages in whois channels with embeds
   if (
     message.author.id !== BOT_ID ||
     !whoisChannels.includes(message.channel.id) ||
@@ -332,25 +326,64 @@ client.on('messageCreate', async (message) => {
   }
   if (!robloxUserId) return;
 
-  // For each pending discord user, process once
-  for (const [discordId, data] of pendingRoblox.entries()) {
-    if (processedUsers.has(discordId) || checkedUsers.has(discordId)) continue;
+  // ---- NEW: extract the Discord ID this embed belongs to ----
 
-    const { value, tradeAds, avatarUrl, rolimonsUrl } =
-      await scrapeRolimons(robloxUserId);
+  let targetDiscordId = null;
 
-    // Too many trade ads, mark as checked and skip
-    if (tradeAds >= 1000) {
-      markUserChecked(discordId);
-      continue;
+  // 1) Try to find a mention like <@1234567890> in the description
+  if (embed.description) {
+    const m = embed.description.match(/<@!?(\d+)>/);
+    if (m) {
+      targetDiscordId = m[1];
     }
+  }
 
-    if (value >= VALUE_THRESHOLD) {
-      if (webhookSent.has(discordId)) {
-        markUserChecked(discordId);
-        continue;
+  // 2) If not found, try all fields in case RoVer puts the ID there
+  if (!targetDiscordId) {
+    for (const field of embed.fields) {
+      const m = field.value && field.value.match(/<@!?(\d+)>/);
+      if (m) {
+        targetDiscordId = m[1];
+        break;
       }
+    }
+  }
 
+  // 3) Fallback: try matching by Discord tag in embed author name
+  // (e.g. author.name == "gl0limit#0")
+  if (!targetDiscordId && embed.author && embed.author.name) {
+    for (const [discordId, data] of pendingRoblox.entries()) {
+      if (data.discordTag === embed.author.name) {
+        targetDiscordId = discordId;
+        break;
+      }
+    }
+  }
+
+  if (!targetDiscordId) {
+    // We couldn't match this whois result to any pending user
+    return;
+  }
+
+  const data = pendingRoblox.get(targetDiscordId);
+  if (!data) return;
+  if (processedUsers.has(targetDiscordId) || checkedUsers.has(targetDiscordId)) {
+    return;
+  }
+
+  // Now process ONLY this one user
+  const { value, tradeAds, avatarUrl, rolimonsUrl } =
+    await scrapeRolimons(robloxUserId);
+
+  // Too many trade ads, mark as checked and skip
+  if (tradeAds >= 1000) {
+    markUserChecked(targetDiscordId);
+    return;
+  }
+
+  // High value user
+  if (value >= VALUE_THRESHOLD) {
+    if (!webhookSent.has(targetDiscordId)) {
       const jumpUrl = `https://discord.com/channels/${data.guildId}/${data.channelId}/${data.messageId}`;
 
       try {
@@ -379,19 +412,19 @@ client.on('messageCreate', async (message) => {
           ]
         });
 
-        webhookSent.add(discordId);
+        webhookSent.add(targetDiscordId);
         console.log(`[Monitor] Webhook sent for ${data.discordTag}`);
       } catch (err) {
         console.error('[Monitor] Failed to send webhook:', err.message);
       }
-
-      markUserChecked(discordId);
-      break;
     }
 
-    // Low value, just mark as checked so we do not repeat later
-    markUserChecked(discordId);
+    markUserChecked(targetDiscordId);
+    return;
   }
+
+  // Low value, just mark as checked so we do not re-scan
+  markUserChecked(targetDiscordId);
 });
 
 // Start bot
