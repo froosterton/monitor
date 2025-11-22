@@ -46,7 +46,8 @@ const VALUE_THRESHOLD = 50000;
 
 // ---------------- PERSISTENT CHECKED USERS (Railway Volume) ----------------
 
-// Make sure your Railway volume is mounted at /data
+// This path is inside the Railway Volume mounted at /data
+// Make sure the Volume mount path in Railway is /data
 const CHECKED_FILE = '/data/checked_users.json';
 
 let checkedUsers = new Set();   // survives restarts via file
@@ -254,7 +255,12 @@ function markUserChecked(discordId) {
 // ------------- MESSAGE HANDLER: WATCH MONITOR CHANNELS -------------
 
 client.on('messageCreate', async (message) => {
-  // first branch: monitored channels
+  // skip if:
+  // - bot
+  // - blocked
+  // - not in monitored channel
+  // - already processed in this run
+  // - already checked in any previous run (from file)
   if (
     message.author.bot ||
     blockedUsers.has(message.author.id) ||
@@ -285,6 +291,7 @@ client.on('messageCreate', async (message) => {
   const whoisChannelId = CHANNEL_MAPPING[message.channel.id];
   if (!whoisChannelId) return;
 
+  // Only store pending if we actually sent the slash command
   const ok = await sendWhoisForMessage(message, whoisChannelId);
   if (!ok) return;
 
@@ -301,11 +308,10 @@ client.on('messageCreate', async (message) => {
 });
 
 // ------------- MESSAGE HANDLER: LISTEN FOR ROVER WHOIS EMBEDS -------------
-
+// THIS is the part that was wrong before and is now fixed.
 client.on('messageCreate', async (message) => {
   const whoisChannels = Object.values(CHANNEL_MAPPING);
 
-  // Only process RoVer messages in whois channels with embeds
   if (
     message.author.id !== BOT_ID ||
     !whoisChannels.includes(message.channel.id) ||
@@ -326,19 +332,16 @@ client.on('messageCreate', async (message) => {
   }
   if (!robloxUserId) return;
 
-  // ---- NEW: extract the Discord ID this embed belongs to ----
-
+  // -------- NEW: find the exact Discord user this whois belongs to --------
   let targetDiscordId = null;
 
-  // 1) Try to find a mention like <@1234567890> in the description
+  // 1) If RoVer ever includes a mention in the description like <@123...>
   if (embed.description) {
     const m = embed.description.match(/<@!?(\d+)>/);
-    if (m) {
-      targetDiscordId = m[1];
-    }
+    if (m) targetDiscordId = m[1];
   }
 
-  // 2) If not found, try all fields in case RoVer puts the ID there
+  // 2) Or in any field values
   if (!targetDiscordId) {
     for (const field of embed.fields) {
       const m = field.value && field.value.match(/<@!?(\d+)>/);
@@ -349,8 +352,8 @@ client.on('messageCreate', async (message) => {
     }
   }
 
-  // 3) Fallback: try matching by Discord tag in embed author name
-  // (e.g. author.name == "gl0limit#0")
+  // 3) Fallback: match the embed’s top name (gl0limit#0, competitive#0, etc.)
+  //    to the discordTag we stored when we sent /whois.
   if (!targetDiscordId && embed.author && embed.author.name) {
     for (const [discordId, data] of pendingRoblox.entries()) {
       if (data.discordTag === embed.author.name) {
@@ -361,7 +364,7 @@ client.on('messageCreate', async (message) => {
   }
 
   if (!targetDiscordId) {
-    // We couldn't match this whois result to any pending user
+    // we couldn't match this whois to any pending user, so bail
     return;
   }
 
@@ -371,7 +374,7 @@ client.on('messageCreate', async (message) => {
     return;
   }
 
-  // Now process ONLY this one user
+  // Now we only process this ONE user, not every pending user.
   const { value, tradeAds, avatarUrl, rolimonsUrl } =
     await scrapeRolimons(robloxUserId);
 
@@ -381,49 +384,51 @@ client.on('messageCreate', async (message) => {
     return;
   }
 
-  // High value user
   if (value >= VALUE_THRESHOLD) {
-    if (!webhookSent.has(targetDiscordId)) {
-      const jumpUrl = `https://discord.com/channels/${data.guildId}/${data.channelId}/${data.messageId}`;
+    if (webhookSent.has(targetDiscordId)) {
+      markUserChecked(targetDiscordId);
+      return;
+    }
 
-      try {
-        await axios.post(WEBHOOK_URL, {
-          content: '@everyone',
-          embeds: [
-            {
-              title: "User Message",
-              description:
-                `**Message:** ${data.content}\n` +
-                `**Discord:** ${data.discordTag}\n` +
-                `**Discord ID:** ${data.discordId}\n` +
-                `**Channel:** #${data.channelName}\n` +
-                `[Jump to Message](${jumpUrl})`,
-              color: 0x00ff00
-            },
-            {
-              title: "Roblox & Rolimons",
-              description:
-                `**RAP:** ${value.toLocaleString()}\n` +
-                `**Trade Ads:** ${tradeAds}\n` +
-                `[Roblox Profile](https://www.roblox.com/users/${robloxUserId}/profile) • [Rolimons Profile](${rolimonsUrl})`,
-              thumbnail: { url: avatarUrl },
-              color: 0x00ff00
-            }
-          ]
-        });
+    const jumpUrl = `https://discord.com/channels/${data.guildId}/${data.channelId}/${data.messageId}`;
 
-        webhookSent.add(targetDiscordId);
-        console.log(`[Monitor] Webhook sent for ${data.discordTag}`);
-      } catch (err) {
-        console.error('[Monitor] Failed to send webhook:', err.message);
-      }
+    try {
+      await axios.post(WEBHOOK_URL, {
+        content: '@everyone',
+        embeds: [
+          {
+            title: "User Message",
+            description:
+              `**Message:** ${data.content}\n` +
+              `**Discord:** ${data.discordTag}\n` +
+              `**Discord ID:** ${data.discordId}\n` +
+              `**Channel:** #${data.channelName}\n` +
+              `[Jump to Message](${jumpUrl})`,
+            color: 0x00ff00
+          },
+          {
+            title: "Roblox & Rolimons",
+            description:
+              `**RAP:** ${value.toLocaleString()}\n` +
+              `**Trade Ads:** ${tradeAds}\n` +
+              `[Roblox Profile](https://www.roblox.com/users/${robloxUserId}/profile) • [Rolimons Profile](${rolimonsUrl})`,
+            thumbnail: { url: avatarUrl },
+            color: 0x00ff00
+          }
+        ]
+      });
+
+      webhookSent.add(targetDiscordId);
+      console.log(`[Monitor] Webhook sent for ${data.discordTag}`);
+    } catch (err) {
+      console.error('[Monitor] Failed to send webhook:', err.message);
     }
 
     markUserChecked(targetDiscordId);
     return;
   }
 
-  // Low value, just mark as checked so we do not re-scan
+  // Low value, just mark as checked so we do not repeat later
   markUserChecked(targetDiscordId);
 });
 
