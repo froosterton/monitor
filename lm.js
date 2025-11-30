@@ -3,13 +3,14 @@ const axios = require('axios');
 
 // Use environment variable for token (more secure)
 const TOKEN = process.env.DISCORD_TOKEN;
-const MONITOR_CHANNEL_IDS = ['430203025659789343', '442709792839172099', '442709710408515605'];
+const MONITOR_CHANNEL_IDS = ['430203025659789343', '442709792839172099', '442709710408515605', '542147434122444838'];
 
 // Map monitor channels to their corresponding whois channels
 const CHANNEL_MAPPING = {
   '430203025659789343': '1393342132583927821', // lounge
   '442709792839172099': '1403939114683863180', // trade lounge
-  '442709710408515605': '1403939122904825856'  // trade ads
+  '442709710408515605': '1403939122904825856',  // trade ads
+  '542147434122444838': '1444771838600155300' // bot cmds
 };
 
 const WEBHOOK_URL = process.env.WEBHOOK_URL;
