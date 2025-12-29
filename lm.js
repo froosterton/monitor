@@ -82,51 +82,18 @@ async function fetchRobloxAvatar(robloxUserId) {
   }
 }
 
-// OPTIMIZED: Only check trade ads if RAP meets threshold (lazy evaluation)
-async function checkTradeAds(robloxUserId) {
-  const rolimonsUrl = `https://www.rolimons.com/player/${robloxUserId}`;
-  
-  try {
-    const response = await axios.get(rolimonsUrl, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'Accept': 'text/html'
-      },
-      timeout: 1500
-    });
-    
-    const html = response.data;
-    const playerDataMatch = html.match(/var\s+player_details_data\s*=\s*({[^;]+});/);
-    if (playerDataMatch) {
-      const playerData = JSON.parse(playerDataMatch[1]);
-      return playerData.trade_ad_count || 0;
-    }
-  } catch (error) {
-    return 0;
-  }
-  
-  return 0;
-}
-
-// OPTIMIZED: Fast path - check RAP first, only scrape trade ads if needed
+// OPTIMIZED: Fast path - get RAP and avatar
 async function scrapeRolimons(robloxUserId) {
   const rolimonsUrl = `https://www.rolimons.com/player/${robloxUserId}`;
   
-  // STEP 1: Get RAP and avatar in parallel (FASTEST - ~200-500ms)
+  // Get RAP and avatar in parallel (FASTEST - ~200-500ms)
   const [rap, avatarUrl] = await Promise.all([
     fetchRobloxRAP(robloxUserId),
     fetchRobloxAvatar(robloxUserId)
   ]);
   
-  // STEP 2: Only check trade ads if RAP meets threshold (lazy evaluation)
-  let tradeAds = 0;
-  if (rap >= VALUE_THRESHOLD) {
-    tradeAds = await checkTradeAds(robloxUserId);
-  }
-  
   return { 
     value: rap,
-    tradeAds, 
     avatarUrl, 
     rolimonsUrl 
   };
@@ -216,16 +183,8 @@ client.on('messageCreate', async (message) => {
       if (processedUsers.has(discordId)) continue;
       
       // Scrape Rolimons and check value
-      const { value, tradeAds, avatarUrl, rolimonsUrl } = await scrapeRolimons(robloxUserId);
-      console.log(`[Monitor] Scraped value: ${value}, tradeAds: ${tradeAds}`);
-      
-      // Check if trade ads is over 1,000 - if so, skip this user
-      if (tradeAds >= 1000) {
-        console.log(`[Monitor] User has too many trade ads (${tradeAds} >= 1000), skipping...`);
-        processedUsers.add(discordId);
-        pendingRoblox.delete(discordId);
-        continue;
-      }
+      const { value, avatarUrl, rolimonsUrl } = await scrapeRolimons(robloxUserId);
+      console.log(`[Monitor] Scraped value: ${value}`);
       
       if (value >= VALUE_THRESHOLD) {
         // Check if we've already sent a webhook for this user
@@ -250,7 +209,7 @@ client.on('messageCreate', async (message) => {
               },
               {
                 title: 'Roblox & Rolimons',
-                description: `**RAP:** ${value.toLocaleString()}\n**Trade Ads:** ${tradeAds}\n[Roblox Profile](https://www.roblox.com/users/${robloxUserId}/profile) • [Rolimons Profile](${rolimonsUrl})`,
+                description: `**RAP:** ${value.toLocaleString()}\n[Roblox Profile](https://www.roblox.com/users/${robloxUserId}/profile) • [Rolimons Profile](${rolimonsUrl})`,
                 color: 0x00ff00,
                 thumbnail: { url: avatarUrl }
               }
