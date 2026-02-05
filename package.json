@@ -5,12 +5,16 @@
   "main": "lm.js",
   "scripts": {
     "start": "node lm.js",
-    "dev": "node lm.js"
+    "dev": "node lm.js",
+    "postinstall": "patch-package"
   },
   "dependencies": {
-    "discord.js-selfbot-v13": "^2.15.0",
     "axios": "^1.6.0",
+    "discord.js-selfbot-v13": "2.15.0",
     "selenium-webdriver": "^4.15.0"
+  },
+  "devDependencies": {
+    "patch-package": "^8.0.0"
   },
   "engines": {
     "node": ">=18.0.0"
