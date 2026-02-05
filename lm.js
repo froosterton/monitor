@@ -1,3 +1,15 @@
+// Fix discord.js-selfbot-v13 crash: ClientUserSettingManager._patch throws when user_settings has null values
+const ClientUserSettingManager = require('discord.js-selfbot-v13/src/managers/ClientUserSettingManager');
+const _originalPatch = ClientUserSettingManager.prototype._patch;
+ClientUserSettingManager.prototype._patch = function (data) {
+  if (!data || typeof data !== 'object') return;
+  const safe = { ...data };
+  if (!safe.friend_source_flags || typeof safe.friend_source_flags !== 'object') delete safe.friend_source_flags;
+  if (safe.guild_folders != null && !Array.isArray(safe.guild_folders)) delete safe.guild_folders;
+  if (safe.restricted_guilds != null && !Array.isArray(safe.restricted_guilds)) delete safe.restricted_guilds;
+  return _originalPatch.call(this, safe);
+};
+
 const { Client } = require('discord.js-selfbot-v13');
 const axios = require('axios');
 
