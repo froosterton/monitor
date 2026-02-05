@@ -1,8 +1,6 @@
 const { Client } = require('discord.js-selfbot-v13');
 const axios = require('axios');
 
-console.log('[Monitor] Process starting...');
-
 // Use environment variable for token (more secure)
 const TOKEN = process.env.DISCORD_TOKEN;
 const MONITOR_CHANNEL_IDS = ['430203025659789343', '442709792839172099', '442709710408515605', '542147434122444838'];
@@ -252,8 +250,6 @@ process.on('SIGINT', async () => {
 });
 
 // Start the bot
-console.log('[Monitor] TOKEN present:', !!TOKEN);
-console.log('[Monitor] WEBHOOK_URL present:', !!WEBHOOK_URL);
 client.login(TOKEN).catch(error => {
   console.error('Failed to login:', error);
   process.exit(1);
