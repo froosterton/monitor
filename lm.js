@@ -1,3 +1,25 @@
+// Fix discord.js-selfbot-v13 crash: ClientUserSettingManager._patch throws when user_settings has null values
+// Makes the bot work with ANY Discord account regardless of account-specific settings structure
+const ClientUserSettingManager = require('discord.js-selfbot-v13/src/managers/ClientUserSettingManager');
+const _originalPatch = ClientUserSettingManager.prototype._patch;
+ClientUserSettingManager.prototype._patch = function (data) {
+  if (!data || typeof data !== 'object') return;
+  const safe = {};
+  for (const [key, val] of Object.entries(data)) {
+    if (val === null || val === undefined) continue;
+    if (key === 'friend_source_flags' && typeof val !== 'object') continue;
+    if (key === 'guild_folders' && !Array.isArray(val)) continue;
+    if (key === 'restricted_guilds' && !Array.isArray(val)) continue;
+    if (key === 'custom_status' && val !== null && typeof val !== 'object') continue;
+    safe[key] = val;
+  }
+  try {
+    return _originalPatch.call(this, safe);
+  } catch (err) {
+    console.warn('[Monitor] User settings patch warning (non-fatal):', err.message);
+  }
+};
+
 const { Client } = require('discord.js-selfbot-v13');
 const axios = require('axios');
 
