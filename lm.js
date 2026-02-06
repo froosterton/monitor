@@ -101,7 +101,7 @@ client.on('ready', async () => {
     try {
       const ch = await client.channels.fetch(chId);
       if (ch) {
-        await ch.searchInteraction({ type: 'APPLICATION_COMMAND', query: 'whois', botId: [BOT_ID] });
+        await ch.searchInteraction({ type: 'APPLICATION_COMMAND', query: 'whois', botId: BOT_ID });
         console.log(`[Monitor] Loaded slash commands in whois channel ${chId}`);
       }
     } catch (err) {
