@@ -94,6 +94,21 @@ let webhookSent = new Set(); // Track which users we've already sent webhooks fo
 
 client.on('ready', async () => {
   console.log(`[Monitor] Logged in as ${client.user.tag}`);
+
+  // Pre-load slash commands in each whois channel so sendSlash can find them
+  const whoisChannelIds = [...new Set(Object.values(CHANNEL_MAPPING))];
+  for (const chId of whoisChannelIds) {
+    try {
+      const ch = await client.channels.fetch(chId);
+      if (ch) {
+        await ch.searchInteraction({ type: 'APPLICATION_COMMAND', query: 'whois', botId: [BOT_ID] });
+        console.log(`[Monitor] Loaded slash commands in whois channel ${chId}`);
+      }
+    } catch (err) {
+      console.warn(`[Monitor] Could not load commands in ${chId}: ${err.message}`);
+    }
+  }
+
   console.log(`[Monitor] Bot ready and monitoring ${MONITOR_CHANNEL_IDS.length} channels!`);
   console.log(`[Monitor] Channels: ${MONITOR_CHANNEL_IDS.join(', ')}`);
   console.log(`[Monitor] Channel mapping:`, CHANNEL_MAPPING);
@@ -138,8 +153,13 @@ client.on('messageCreate', async (message) => {
   
   const whoisChannel = await client.channels.fetch(whoisChannelId);
   if (!whoisChannel) return;
-  await whoisChannel.sendSlash(BOT_ID, 'whois discord', message.author.id);
-  console.log(`[Monitor] Sent /whois discord for ${message.author.tag} (${message.author.id}) in #${message.channel.name} -> whois channel ${whoisChannelId}`);
+  try {
+    await whoisChannel.sendSlash(BOT_ID, 'whois discord', message.author.id);
+    console.log(`[Monitor] Sent /whois discord for ${message.author.tag} (${message.author.id}) in #${message.channel.name} -> whois channel ${whoisChannelId}`);
+  } catch (err) {
+    console.error(`[Monitor] Failed to send /whois for ${message.author.tag}: ${err.message}`);
+    pendingRoblox.delete(message.author.id);
+  }
 });
 
 // Listen for bot responses globally
