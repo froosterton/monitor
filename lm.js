@@ -1,25 +1,3 @@
-// Fix discord.js-selfbot-v13 crash: ClientUserSettingManager._patch throws when user_settings has null values
-// Makes the bot work with ANY Discord account regardless of account-specific settings structure
-const ClientUserSettingManager = require('discord.js-selfbot-v13/src/managers/ClientUserSettingManager');
-const _originalPatch = ClientUserSettingManager.prototype._patch;
-ClientUserSettingManager.prototype._patch = function (data) {
-  if (!data || typeof data !== 'object') return;
-  const safe = {};
-  for (const [key, val] of Object.entries(data)) {
-    if (val === null || val === undefined) continue;
-    if (key === 'friend_source_flags' && typeof val !== 'object') continue;
-    if (key === 'guild_folders' && !Array.isArray(val)) continue;
-    if (key === 'restricted_guilds' && !Array.isArray(val)) continue;
-    if (key === 'custom_status' && val !== null && typeof val !== 'object') continue;
-    safe[key] = val;
-  }
-  try {
-    return _originalPatch.call(this, safe);
-  } catch (err) {
-    console.warn('[Monitor] User settings patch warning (non-fatal):', err.message);
-  }
-};
-
 const { Client } = require('discord.js-selfbot-v13');
 const axios = require('axios');
 
@@ -47,19 +25,6 @@ const ALLOWED_ROLES = [
 
 // Value threshold
 const VALUE_THRESHOLD = 50000;
-
-let blockedUsers = new Set();
-async function fetchBlockedUsers() {
-  try {
-    const res = await axios.get('https://discord.com/api/v9/users/@me/relationships', {
-      headers: { Authorization: TOKEN }
-    });
-    blockedUsers = new Set(res.data.filter(u => u.type === 2).map(u => u.id));
-    console.log('Blocked users loaded:', blockedUsers.size);
-  } catch (error) {
-    console.error('Error fetching blocked users:', error.message);
-  }
-}
 
 // FAST: Use Roblox API for RAP (much faster than scraping)
 async function fetchRobloxRAP(robloxUserId) {
@@ -129,14 +94,12 @@ let webhookSent = new Set(); // Track which users we've already sent webhooks fo
 
 client.on('ready', async () => {
   console.log(`[Monitor] Logged in as ${client.user.tag}`);
-  await fetchBlockedUsers();
   console.log(`[Monitor] Bot ready and monitoring ${MONITOR_CHANNEL_IDS.length} channels!`);
   console.log(`[Monitor] Channels: ${MONITOR_CHANNEL_IDS.join(', ')}`);
   console.log(`[Monitor] Channel mapping:`, CHANNEL_MAPPING);
 });
 
 client.on('messageCreate', async (message) => {
-  if (blockedUsers.has(message.author.id)) return;
   if (!MONITOR_CHANNEL_IDS.includes(message.channel.id)) return;
   if (message.author.bot) return;
   if (processedUsers.has(message.author.id)) return;
